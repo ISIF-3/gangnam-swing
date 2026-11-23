@@ -472,8 +472,13 @@ function findSpawn() {
   return new THREE.Vector3(0, 0, 0);
 }
 const SPAWN = findSpawn();
+// physics runs at a fixed rate; visuals draw the body between the last two physics states
+const PHYS_DT = 1 / 240;
+let physAcc = 0;
+const prevPos = new THREE.Vector3(), renderPos = new THREE.Vector3();
 function resetPlayer() {
   player.pos.copy(SPAWN); player.vel.set(0, 0, 0); player.grounded = true;
+  prevPos.copy(SPAWN); renderPos.copy(SPAWN); physAcc = 0;
   cam.yaw = 0; cam.pitch = -0.12; player.facing = 0;
   player.fwd.set(0, 0, -1); character.quaternion.identity();
   for (const r of Object.values(ropes)) { r.state = 'idle'; r.held = false; r.tension = r.tensionRaw = 0; }
@@ -554,9 +559,9 @@ function yank() {
   return true;
 }
 
-function updateRopes(dt) {
+// rope flight / attach / release: runs inside the fixed physics step so timing matches at any fps
+function stepRopes(dt) {
   for (const r of Object.values(ropes)) {
-    r.wrist.getWorldPosition(_w);
     if (r.state === 'flying') {
       if (!r.held) r.state = 'retracting';
       else {
@@ -575,6 +580,11 @@ function updateRopes(dt) {
       if (!r.held) { applyReleaseBoost(r); r.state = 'idle'; r.tension = r.tensionRaw = 0; }
       else r.tip.copy(r.anchor);
     }
+  }
+}
+function updateRopes(dt) {
+  for (const r of Object.values(ropes)) {
+    r.wrist.getWorldPosition(_w);
     if (r.state === 'retracting') {
       const d = r.tip.distanceTo(_w), stepD = Math.max(S.ropeSpeed * 1.5, 150) * dt;
       if (d <= stepD) r.state = 'idle';
@@ -801,7 +811,7 @@ function updateCharacter(dt) {
   _qBody.setFromRotationMatrix(_m4);
   const turnRate = cam.mode === 'first' && player.grounded ? 30 : player.grounded ? 12 : 5.5;
   character.quaternion.slerp(_qBody, 1 - Math.exp(-turnRate * dt));
-  character.position.copy(player.pos).y += PIVOT_Y;
+  character.position.copy(renderPos).y += PIVOT_Y;
   character.updateMatrixWorld(true);
 
   // --- limbs ---
@@ -861,7 +871,7 @@ function updateCamera(dt) {
     cam.actualDist = 0;
   } else {
     const rx = Math.cos(cam.yaw), rz = -Math.sin(cam.yaw);
-    _tgt.copy(player.pos); _tgt.y += 1.6; _tgt.x += rx * 0.7; _tgt.z += rz * 0.7;
+    _tgt.copy(renderPos); _tgt.y += 1.6; _tgt.x += rx * 0.7; _tgt.z += rz * 0.7;
     let d = 0;
     for (; d < cam.dist; d += 0.25) {
       if (cameraBlocked(_tgt.x - _cd.x * d, _tgt.y - _cd.y * d, _tgt.z - _cd.z * d)) break;
@@ -1035,7 +1045,12 @@ function frame(now) {
   tick(dt);
 }
 function tick(dt) {
-  if (!state.paused) { updateLookKeys(dt); const N = 4; for (let i = 0; i < N; i++) physicsStep(dt / N); }
+  if (!state.paused) {
+    updateLookKeys(dt);
+    physAcc += dt;
+    while (physAcc >= PHYS_DT) { prevPos.copy(player.pos); stepRopes(PHYS_DT); physicsStep(PHYS_DT); physAcc -= PHYS_DT; }
+  }
+  renderPos.lerpVectors(prevPos, player.pos, physAcc / PHYS_DT);
   updateCharacter(dt);
   if (!state.paused) updateRopes(dt);
   updateCamera(dt);
