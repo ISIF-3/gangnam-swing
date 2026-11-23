@@ -1,0 +1,907 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>강남 스윙</title>
+<style>
+  :root {
+    --panel: rgba(16, 22, 30, 0.86);
+    --text: #e8eef4;
+    --muted: #9fb0c0;
+    --accent: #3fc1c9;
+    --ok: #7dffa8;
+  }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #a9c8e8; font-family: "Malgun Gothic", "Apple SD Gothic Neo", system-ui, sans-serif; color: var(--text); }
+  canvas#view { display: block; }
+  #crosshair { position: fixed; left: 50%; top: 50%; width: 22px; height: 22px; margin: -11px 0 0 -11px; pointer-events: none; }
+  #crosshair::before, #crosshair::after { content: ""; position: absolute; background: rgba(255,255,255,0.85); box-shadow: 0 0 2px rgba(0,0,0,0.6); }
+  #crosshair::before { left: 10px; top: 2px; width: 2px; height: 18px; }
+  #crosshair::after { top: 10px; left: 2px; height: 2px; width: 18px; }
+  #crosshair.ok::before, #crosshair.ok::after { background: var(--ok); }
+  #hud { position: fixed; left: 14px; top: 12px; font-size: 13px; line-height: 1.55; text-shadow: 0 1px 2px rgba(0,0,0,0.7); pointer-events: none; }
+  #hud b { color: var(--accent); font-weight: 600; }
+  #minimap { position: fixed; right: 14px; top: 12px; width: 180px; height: 180px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.35); background: rgba(16,22,30,0.55); pointer-events: none; }
+  #attrib { position: fixed; left: 8px; bottom: 6px; font-size: 11px; color: rgba(255,255,255,0.85); text-shadow: 0 1px 2px rgba(0,0,0,0.7); }
+  #keys { position: fixed; right: 14px; bottom: 10px; font-size: 12px; color: rgba(255,255,255,0.85); text-shadow: 0 1px 2px rgba(0,0,0,0.7); text-align: right; pointer-events: none; }
+  #overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(8, 12, 18, 0.45); }
+  #overlay.hidden { display: none; }
+  .card { background: var(--panel); border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; padding: 22px 26px; width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 40px); overflow: auto; box-sizing: border-box; }
+  .card h1 { margin: 0 0 4px; font-size: 24px; }
+  .card .sub { margin: 0 0 16px; color: var(--muted); font-size: 13px; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 560px) { .cols { grid-template-columns: 1fr; } }
+  .card h2 { font-size: 14px; margin: 0 0 8px; color: var(--accent); }
+  .ctl { font-size: 13px; line-height: 1.8; margin: 0; padding: 0; list-style: none; }
+  .ctl kbd { display: inline-block; min-width: 18px; padding: 0 5px; margin-right: 6px; border-radius: 4px; background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.2); font-family: inherit; font-size: 12px; text-align: center; }
+  .slider { margin-bottom: 9px; font-size: 13px; }
+  .slider label { display: flex; justify-content: space-between; color: var(--muted); }
+  .slider label span { color: var(--text); }
+  .slider input { width: 100%; accent-color: var(--accent); }
+  .btns { display: flex; gap: 10px; margin-top: 16px; }
+  button { font: inherit; font-size: 14px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.08); color: var(--text); padding: 9px 14px; cursor: pointer; }
+  button.primary { background: var(--accent); color: #0b1620; border-color: transparent; font-weight: 700; flex: 1; }
+  #msg { margin-top: 10px; font-size: 12px; color: #ffcf7a; min-height: 1em; }
+  body.nocursor, body.nocursor canvas { cursor: none; }
+  #loading { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 16px; background: #1a2430; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+</head>
+<body>
+<div id="loading">도시를 불러오는 중…</div>
+<div id="crosshair"></div>
+<div id="hud"></div>
+<canvas id="minimap" width="360" height="360"></canvas>
+<div id="keys">좌클릭/우클릭 줄 · WASD 이동 · Space 점프 · V 시점 · Esc 설정</div>
+<div id="attrib">지도 데이터 © OpenStreetMap contributors (ODbL)</div>
+
+<div id="overlay">
+  <div class="card">
+    <h1>강남 스윙</h1>
+    <p class="sub">강남역 주변 실제 지도(OpenStreetMap) 기반 · 높이 정보가 없는 건물은 랜덤 높이로 채웠어요</p>
+    <div class="cols">
+      <div>
+        <h2>조작법</h2>
+        <ul class="ctl">
+          <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>이동 / 공중 방향·균형</li>
+          <li><kbd>Space</kbd>점프</li>
+          <li><kbd>Shift</kbd>달리기</li>
+          <li><kbd>좌클릭</kbd>왼손 줄 (누르고 있기 = 매달림)</li>
+          <li><kbd>우클릭</kbd>오른손 줄</li>
+          <li><kbd>V</kbd>3인칭 / 1인칭 전환</li>
+          <li><kbd>←↑↓→</kbd>시야 회전 (보조)</li>
+          <li><kbd>R</kbd>시작 위치로</li>
+          <li><kbd>Esc</kbd>일시정지 · 설정</li>
+        </ul>
+      </div>
+      <div>
+        <h2>설정</h2>
+        <div id="sliders"></div>
+      </div>
+    </div>
+    <div class="btns">
+      <button class="primary" id="play">클릭해서 시작</button>
+      <button id="reset">설정 초기화</button>
+    </div>
+    <div id="msg"></div>
+  </div>
+</div>
+
+<script src="city_data.js"></script>
+<script type="module">
+import * as THREE from 'three';
+
+// ====================================================================
+// Settings
+// ====================================================================
+const DEFAULTS = { ropeSpeed: 200, ropeRange: 120, ropePull: 0.15, elasticity: 0.15, gravity: 22, airControl: 1.0, sensitivity: 1.0, fov: 70 };
+const S = { ...DEFAULTS };
+try { const saved = JSON.parse(localStorage.getItem('gangnam_swing_settings') || 'null'); if (saved) for (const k in DEFAULTS) if (typeof saved[k] === 'number') S[k] = saved[k]; } catch (e) {}
+function saveSettings() { try { localStorage.setItem('gangnam_swing_settings', JSON.stringify(S)); } catch (e) {} }
+
+const SLIDERS = [
+  ['ropeSpeed', '줄 발사 속도', 40, 400, 10, ' m/s'],
+  ['ropeRange', '줄 최대 사거리', 30, 250, 5, ' m'],
+  ['ropePull', '줄 연결 시 당김', 0, 0.4, 0.05, ''],
+  ['elasticity', '줄 탄성 (0 = 딱딱함)', 0, 1, 0.05, ''],
+  ['gravity', '중력', 5, 40, 1, ' m/s²'],
+  ['airControl', '공중 제어력', 0, 3, 0.1, '×'],
+  ['sensitivity', '마우스 감도', 0.2, 3, 0.1, '×'],
+  ['fov', '시야각', 50, 100, 1, '°'],
+];
+const sliderBox = document.getElementById('sliders');
+const sliderInputs = {};
+for (const [key, label, min, max, step, unit] of SLIDERS) {
+  const div = document.createElement('div'); div.className = 'slider';
+  div.innerHTML = `<label>${label}<span></span></label><input type="range" min="${min}" max="${max}" step="${step}">`;
+  const input = div.querySelector('input'), span = div.querySelector('span');
+  const show = () => { span.textContent = (+S[key]).toFixed(step < 1 ? 2 : 0) + unit; };
+  input.value = S[key]; show();
+  input.addEventListener('input', () => { S[key] = +input.value; show(); saveSettings(); });
+  sliderInputs[key] = { input, show };
+  sliderBox.appendChild(div);
+}
+document.getElementById('reset').addEventListener('click', () => {
+  Object.assign(S, DEFAULTS); saveSettings();
+  for (const k in sliderInputs) { sliderInputs[k].input.value = S[k]; sliderInputs[k].show(); }
+});
+
+// ====================================================================
+// Renderer / scene
+// ====================================================================
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.domElement.id = 'view';
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.prepend(renderer.domElement);
+
+const SKY = 0xa9c8e8;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(SKY);
+scene.fog = new THREE.Fog(SKY, 300, 1300);
+
+const camera = new THREE.PerspectiveCamera(S.fov, window.innerWidth / window.innerHeight, 0.05, 4000);
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+scene.add(new THREE.HemisphereLight(0xe4f0ff, 0x6e6a5c, 1.1));
+const sun = new THREE.DirectionalLight(0xfff0dc, 2.2);
+const SUN_DIR = new THREE.Vector3(-0.45, 1.0, 0.35).normalize();
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -150, right: 150, top: 150, bottom: -150, near: 10, far: 900 });
+sun.shadow.bias = -0.0004;
+sun.shadow.normalBias = 0.4;
+scene.add(sun, sun.target);
+
+// ====================================================================
+// City data -> buildings
+// ====================================================================
+function mulberry32(seed) {
+  return function () {
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const DATA = window.CITY_DATA;
+const buildings = [];
+const WALL_PALETTE = [[0.80, 0.79, 0.76], [0.71, 0.71, 0.73], [0.84, 0.79, 0.71], [0.63, 0.65, 0.69], [0.76, 0.71, 0.66], [0.88, 0.87, 0.84], [0.68, 0.62, 0.58]];
+const GLASS_PALETTE = [[0.56, 0.67, 0.79], [0.49, 0.59, 0.67], [0.63, 0.71, 0.77], [0.52, 0.62, 0.72]];
+let estimated = 0;
+
+DATA.buildings.forEach(([hRaw, arr], i) => {
+  const n = arr.length / 2;
+  if (n < 3) return;
+  let area = 0, minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (let k = 0; k < n; k++) {
+    const x0 = arr[2 * k], z0 = arr[2 * k + 1];
+    const k1 = (k + 1) % n, x1 = arr[2 * k1], z1 = arr[2 * k1 + 1];
+    area += x0 * z1 - x1 * z0;
+    if (x0 < minX) minX = x0; if (x0 > maxX) maxX = x0;
+    if (z0 < minZ) minZ = z0; if (z0 > maxZ) maxZ = z0;
+  }
+  area *= 0.5;
+  if (Math.abs(area) < 6) return;
+  const rnd = mulberry32(i * 7919 + 17);
+  let h = hRaw;
+  if (!h) {
+    // Missing height in OSM -> seeded random height based on footprint size
+    const a = Math.abs(area);
+    let floors;
+    if (a < 120) floors = 2 + Math.floor(rnd() * 4);
+    else if (a < 400) floors = 3 + Math.floor(rnd() * 6);
+    else if (a < 1200) floors = 5 + Math.floor(rnd() * 11);
+    else floors = 10 + Math.floor(rnd() * 21);
+    h = floors * 3.4;
+    estimated++;
+  }
+  h = Math.max(3, h);
+  const glass = h > 45 && rnd() < 0.7;
+  const pal = glass ? GLASS_PALETTE : WALL_PALETTE;
+  const base = pal[Math.floor(rnd() * pal.length)];
+  const jitter = 0.94 + rnd() * 0.1;
+  buildings.push({ pts: arr, n, h, area, minX, maxX, minZ, maxZ, color: base.map(c => Math.min(1, c * jitter)) });
+});
+
+// ----- spatial grid -----
+const CELL = 40;
+const grid = new Map();
+const cellKey = (cx, cz) => (cx + 1000) * 4000 + (cz + 1000);
+buildings.forEach((b, idx) => {
+  for (let cx = Math.floor(b.minX / CELL); cx <= Math.floor(b.maxX / CELL); cx++)
+    for (let cz = Math.floor(b.minZ / CELL); cz <= Math.floor(b.maxZ / CELL); cz++) {
+      const k = cellKey(cx, cz);
+      let list = grid.get(k); if (!list) grid.set(k, list = []);
+      list.push(idx);
+    }
+});
+const _qSet = new Set();
+function queryBuildings(minX, maxX, minZ, maxZ) {
+  _qSet.clear();
+  for (let cx = Math.floor(minX / CELL); cx <= Math.floor(maxX / CELL); cx++)
+    for (let cz = Math.floor(minZ / CELL); cz <= Math.floor(maxZ / CELL); cz++) {
+      const list = grid.get(cellKey(cx, cz));
+      if (list) for (const i of list) _qSet.add(i);
+    }
+  return _qSet;
+}
+
+function pointInPoly(b, x, z) {
+  if (x < b.minX || x > b.maxX || z < b.minZ || z > b.maxZ) return false;
+  const p = b.pts, n = b.n;
+  let inside = false;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = p[2 * i], zi = p[2 * i + 1], xj = p[2 * j], zj = p[2 * j + 1];
+    if ((zi > z) !== (zj > z) && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+// closest point on polygon boundary; returns outward normal of that edge
+const _cp = { x: 0, z: 0, d: 0, nx: 0, nz: 0 };
+function closestOnPoly(b, x, z) {
+  const p = b.pts, n = b.n, sgn = b.area > 0 ? 1 : -1;
+  let best = Infinity;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const ax = p[2 * i], az = p[2 * i + 1], bx = p[2 * j], bz = p[2 * j + 1];
+    const ex = bx - ax, ez = bz - az, L2 = ex * ex + ez * ez;
+    if (L2 < 1e-8) continue;
+    let t = ((x - ax) * ex + (z - az) * ez) / L2; t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const px = ax + ex * t, pz = az + ez * t, d = Math.hypot(x - px, z - pz);
+    if (d < best) {
+      best = d; _cp.x = px; _cp.z = pz;
+      const L = Math.sqrt(L2); _cp.nx = (ez / L) * sgn; _cp.nz = (-ex / L) * sgn;
+    }
+  }
+  _cp.d = best;
+  return _cp;
+}
+
+// Ray vs extruded building polygons. Returns {t, point, normal} or null. Ground hits return null.
+function raycastCity(o, d, maxT) {
+  const cand = new Set();
+  const step = CELL * 0.5, steps = Math.ceil(maxT / step);
+  for (let s = 0; s <= steps; s++) {
+    const t = Math.min(maxT, s * step), x = o.x + d.x * t, z = o.z + d.z * t;
+    for (const i of queryBuildings(x - CELL * 0.5, x + CELL * 0.5, z - CELL * 0.5, z + CELL * 0.5)) cand.add(i);
+  }
+  let best = maxT, hit = null;
+  if (d.y < -1e-6) { const tg = -o.y / d.y; if (tg > 0 && tg < best) { best = tg; hit = 'ground'; } }
+  let nx = 0, ny = 0, nz = 0;
+  for (const idx of cand) {
+    const b = buildings[idx];
+    if (Math.abs(d.y) > 1e-6) {
+      const t = (b.h - o.y) / d.y;
+      if (t > 0 && t < best && pointInPoly(b, o.x + d.x * t, o.z + d.z * t)) { best = t; hit = b; nx = 0; ny = 1; nz = 0; }
+    }
+    const p = b.pts, n = b.n, sgn = b.area > 0 ? 1 : -1;
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      const ax = p[2 * i], az = p[2 * i + 1], ex = p[2 * j] - ax, ez = p[2 * j + 1] - az;
+      const denom = d.x * ez - d.z * ex;
+      if (Math.abs(denom) < 1e-9) continue;
+      const wx = ax - o.x, wz = az - o.z;
+      const t = (wx * ez - wz * ex) / denom;
+      if (t <= 0 || t >= best) continue;
+      const s = (wx * d.z - wz * d.x) / denom;
+      if (s < 0 || s > 1) continue;
+      const y = o.y + d.y * t;
+      if (y < 0 || y > b.h) continue;
+      best = t; hit = b;
+      const L = Math.hypot(ex, ez); nx = (ez / L) * sgn; ny = 0; nz = (-ex / L) * sgn;
+    }
+  }
+  if (!hit || hit === 'ground') return null;
+  return { t: best, point: new THREE.Vector3(o.x + d.x * best, o.y + d.y * best, o.z + d.z * best), normal: new THREE.Vector3(nx, ny, nz) };
+}
+
+// ----- building meshes -----
+function makeWindowTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d');
+  g.fillStyle = '#ffffff'; g.fillRect(0, 0, 64, 64);
+  const grd = g.createLinearGradient(0, 14, 0, 52);
+  grd.addColorStop(0, '#53657a'); grd.addColorStop(1, '#8fa3b8');
+  g.fillStyle = grd; g.fillRect(7, 14, 50, 36);
+  g.fillStyle = '#e3e9ee'; g.fillRect(31, 14, 2, 36);
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return tex;
+}
+
+function buildCityMeshes() {
+  const wP = [], wN = [], wU = [], wC = [];
+  const rP = [], rN = [], rC = [];
+  for (const b of buildings) {
+    const p = b.pts, n = b.n, h = b.h, sgn = b.area > 0 ? 1 : -1;
+    const [cr, cg, cb] = b.color;
+    let acc = 0;
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      const x0 = p[2 * i], z0 = p[2 * i + 1], x1 = p[2 * j], z1 = p[2 * j + 1];
+      const dx = x1 - x0, dz = z1 - z0, L = Math.hypot(dx, dz);
+      if (L < 1e-4) continue;
+      const nx = (dz / L) * sgn, nz = (-dx / L) * sgn;
+      const u0 = acc / 4, u1 = (acc + L) / 4, vt = h / 3.4;
+      acc += L;
+      const A = [x0, 0, z0, u0, 0], B = [x1, 0, z1, u1, 0], C = [x1, h, z1, u1, vt], D = [x0, h, z0, u0, vt];
+      const tris = sgn > 0 ? [A, C, B, A, D, C] : [A, B, C, A, C, D];
+      for (const v of tris) { wP.push(v[0], v[1], v[2]); wN.push(nx, 0, nz); wU.push(v[3], v[4]); wC.push(cr, cg, cb); }
+    }
+    const contour = [];
+    for (let i = 0; i < n; i++) contour.push(new THREE.Vector2(p[2 * i], p[2 * i + 1]));
+    let faces;
+    try { faces = THREE.ShapeUtils.triangulateShape(contour, []); } catch (e) { faces = []; }
+    const rr = cr * 0.72, rg = cg * 0.72, rb = cb * 0.74;
+    for (const [a, bI, c] of faces) {
+      const va = contour[a], vb = contour[bI], vc = contour[c];
+      if (!va || !vb || !vc) continue;
+      const cy = (vb.y - va.y) * (vc.x - va.x) - (vb.x - va.x) * (vc.y - va.y);
+      const order = cy >= 0 ? [va, vb, vc] : [va, vc, vb];
+      for (const v of order) { rP.push(v.x, h, v.y); rN.push(0, 1, 0); rC.push(rr, rg, rb); }
+    }
+  }
+  const wallGeo = new THREE.BufferGeometry();
+  wallGeo.setAttribute('position', new THREE.Float32BufferAttribute(wP, 3));
+  wallGeo.setAttribute('normal', new THREE.Float32BufferAttribute(wN, 3));
+  wallGeo.setAttribute('uv', new THREE.Float32BufferAttribute(wU, 2));
+  wallGeo.setAttribute('color', new THREE.Float32BufferAttribute(wC, 3));
+  const walls = new THREE.Mesh(wallGeo, new THREE.MeshLambertMaterial({ map: makeWindowTexture(), vertexColors: true }));
+  const roofGeo = new THREE.BufferGeometry();
+  roofGeo.setAttribute('position', new THREE.Float32BufferAttribute(rP, 3));
+  roofGeo.setAttribute('normal', new THREE.Float32BufferAttribute(rN, 3));
+  roofGeo.setAttribute('color', new THREE.Float32BufferAttribute(rC, 3));
+  const roofs = new THREE.Mesh(roofGeo, new THREE.MeshLambertMaterial({ vertexColors: true }));
+  for (const m of [walls, roofs]) { m.castShadow = true; m.receiveShadow = true; scene.add(m); }
+}
+
+function buildGroundAndRoads() {
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(4000, 4000), new THREE.MeshLambertMaterial({ color: 0x9c9f98 }));
+  ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+  const P = [];
+  const y = 0.03;
+  for (const [w, arr] of DATA.roads) {
+    for (let i = 0; i + 3 < arr.length; i += 2) {
+      let x0 = arr[i], z0 = arr[i + 1], x1 = arr[i + 2], z1 = arr[i + 3];
+      const dx = x1 - x0, dz = z1 - z0, L = Math.hypot(dx, dz);
+      if (L < 0.01) continue;
+      const ux = dx / L, uz = dz / L, e = w * 0.5;
+      x0 -= ux * e; z0 -= uz * e; x1 += ux * e; z1 += uz * e;
+      const px = -uz * w * 0.5, pz = ux * w * 0.5;
+      const a = [x0 + px, z0 + pz], b = [x0 - px, z0 - pz], c = [x1 - px, z1 - pz], d = [x1 + px, z1 + pz];
+      for (const [p, q, r] of [[a, b, c], [a, c, d]]) {
+        const cy = (q[1] - p[1]) * (r[0] - p[0]) - (q[0] - p[0]) * (r[1] - p[1]);
+        const tri = cy >= 0 ? [p, q, r] : [p, r, q];
+        for (const v of tri) P.push(v[0], y, v[1]);
+      }
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+  geo.computeVertexNormals();
+  const roads = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color: 0x3f4247, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }));
+  roads.receiveShadow = true; scene.add(roads);
+}
+
+buildGroundAndRoads();
+buildCityMeshes();
+
+// ====================================================================
+// Character (simple original humanoid, faces -Z, origin at feet)
+// ====================================================================
+const suitMat = new THREE.MeshLambertMaterial({ color: 0x46566b });
+const accentMat = new THREE.MeshLambertMaterial({ color: 0x3fc1c9 });
+const visorMat = new THREE.MeshBasicMaterial({ color: 0xbff8ff });
+
+const character = new THREE.Group();
+scene.add(character);
+const torso = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.6, 0.24), suitMat);
+torso.position.y = 1.25; character.add(torso);
+const belt = new THREE.Mesh(new THREE.BoxGeometry(0.43, 0.07, 0.25), accentMat);
+belt.position.y = 0.98; character.add(belt);
+const chestMark = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.16, 0.02), accentMat);
+chestMark.position.set(0, 1.34, -0.125); chestMark.rotation.z = Math.PI / 4; character.add(chestMark);
+const head = new THREE.Group(); head.position.y = 1.68; character.add(head);
+head.add(new THREE.Mesh(new THREE.SphereGeometry(0.13, 20, 14), suitMat));
+const visor = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.045, 0.04), visorMat);
+visor.position.set(0, 0.015, -0.115); head.add(visor);
+
+function makeLimb(radius, length, mat, x, y) {
+  const pivot = new THREE.Group(); pivot.position.set(x, y, 0);
+  const m = new THREE.Mesh(new THREE.CapsuleGeometry(radius, length, 4, 10), mat);
+  m.position.y = -(length / 2 + radius * 0.5); pivot.add(m);
+  character.add(pivot);
+  return pivot;
+}
+const armL = makeLimb(0.055, 0.52, suitMat, -0.27, 1.5);
+const armR = makeLimb(0.055, 0.52, suitMat, 0.27, 1.5);
+const legL = makeLimb(0.075, 0.76, suitMat, -0.11, 0.95);
+const legR = makeLimb(0.075, 0.76, suitMat, 0.11, 0.95);
+function addWrist(arm) {
+  const w = new THREE.Object3D(); w.position.y = -0.62; arm.add(w);
+  const band = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.065, 0.07, 10), accentMat);
+  band.position.y = -0.56; arm.add(band);
+  return w;
+}
+const wristL = addWrist(armL), wristR = addWrist(armR);
+character.traverse(o => { if (o.isMesh) o.castShadow = true; });
+
+// ====================================================================
+// Game state
+// ====================================================================
+const BODY_RADIUS = 0.38, STEP_UP = 0.4, ROPE_ATTACH_Y = 1.3, EYE_Y = 1.68;
+const player = { pos: new THREE.Vector3(), vel: new THREE.Vector3(), grounded: true, facing: 0, walkPhase: 0 };
+const cam = { yaw: 0, pitch: -0.12, mode: 'third', dist: 5.5, actualDist: 5.5 };
+const keys = {};
+const state = { paused: true, fallback: false, aimHit: null, aimInRange: false, mouseX: 0, mouseY: 0, mouseIn: false };
+
+function findSpawn() {
+  for (let r = 0; r < 200; r += 4) {
+    for (let a = 0; a < 16; a++) {
+      const x = r * Math.cos(a * Math.PI / 8), z = r * Math.sin(a * Math.PI / 8);
+      let blocked = false;
+      for (const i of queryBuildings(x - 2, x + 2, z - 2, z + 2)) {
+        const b = buildings[i];
+        if (pointInPoly(b, x, z) || closestOnPoly(b, x, z).d < 2) { blocked = true; break; }
+      }
+      if (!blocked) return new THREE.Vector3(x, 0, z);
+      if (r === 0) break;
+    }
+  }
+  return new THREE.Vector3(0, 0, 0);
+}
+const SPAWN = findSpawn();
+function resetPlayer() {
+  player.pos.copy(SPAWN); player.vel.set(0, 0, 0); player.grounded = true;
+  cam.yaw = 0; cam.pitch = -0.12; player.facing = 0;
+  for (const r of Object.values(ropes)) { r.state = 'idle'; r.held = false; }
+}
+
+// ====================================================================
+// Ropes
+// ====================================================================
+const ropeGeo = new THREE.CylinderGeometry(0.028, 0.028, 1, 6, 1, true);
+const ropeMat = new THREE.MeshBasicMaterial({ color: 0xf4f8fa });
+const anchorGeo = new THREE.SphereGeometry(0.18, 10, 8);
+function makeRope(side, wrist) {
+  const mesh = new THREE.Mesh(ropeGeo, ropeMat); mesh.visible = false; scene.add(mesh);
+  const dot = new THREE.Mesh(anchorGeo, ropeMat); dot.visible = false; scene.add(dot);
+  return { side, wrist, mesh, dot, state: 'idle', held: false, hit: false, anchor: new THREE.Vector3(), launch: new THREE.Vector3(), dir: new THREE.Vector3(), tip: new THREE.Vector3(), tipDist: 0, targetDist: 0, len: 0, targetLen: 0 };
+}
+const ropes = { L: makeRope('L', wristL), R: makeRope('R', wristR) };
+
+function camDir(out) {
+  const cp = Math.cos(cam.pitch);
+  return out.set(-Math.sin(cam.yaw) * cp, Math.sin(cam.pitch), -Math.cos(cam.yaw) * cp);
+}
+const _dir = new THREE.Vector3(), _o = new THREE.Vector3(), _w = new THREE.Vector3(), _chest = new THREE.Vector3();
+
+function computeAim() {
+  camDir(_dir);
+  const skip = cam.mode === 'third' ? cam.actualDist : 0;
+  _o.copy(camera.position).addScaledVector(_dir, skip);
+  const hit = raycastCity(_o, _dir, S.ropeRange + 30);
+  _chest.copy(player.pos).y += ROPE_ATTACH_Y;
+  state.aimHit = hit;
+  state.aimInRange = !!hit && hit.point.distanceTo(_chest) <= S.ropeRange;
+  return hit;
+}
+
+function fireRope(side) {
+  const r = ropes[side];
+  const hit = computeAim();
+  r.wrist.getWorldPosition(_w);
+  r.launch.copy(_w);
+  if (hit && state.aimInRange) {
+    r.hit = true; r.anchor.copy(hit.point).addScaledVector(hit.normal, 0.05);
+    r.dir.subVectors(r.anchor, _w); r.targetDist = r.dir.length(); r.dir.normalize();
+  } else {
+    r.hit = false;
+    const aimPoint = _o.clone().addScaledVector(_dir, S.ropeRange);
+    r.dir.subVectors(aimPoint, _w).normalize(); r.targetDist = S.ropeRange;
+  }
+  r.tipDist = 0; r.tip.copy(_w); r.state = 'flying'; r.held = true;
+}
+function releaseRope(side) { ropes[side].held = false; }
+
+function updateRopes(dt) {
+  for (const r of Object.values(ropes)) {
+    r.wrist.getWorldPosition(_w);
+    if (r.state === 'flying') {
+      if (!r.held) r.state = 'retracting';
+      else {
+        r.tipDist = Math.min(r.targetDist, r.tipDist + S.ropeSpeed * dt);
+        r.tip.copy(r.launch).addScaledVector(r.dir, r.tipDist);
+        if (r.tipDist >= r.targetDist) {
+          if (r.hit) {
+            r.state = 'attached'; r.tip.copy(r.anchor);
+            _chest.copy(player.pos).y += ROPE_ATTACH_Y;
+            r.len = Math.max(1.5, _chest.distanceTo(r.anchor));
+            r.targetLen = Math.max(1.5, r.len * (1 - S.ropePull));
+          } else r.state = 'retracting';
+        }
+      }
+    } else if (r.state === 'attached') {
+      if (!r.held) r.state = 'idle';
+      else r.tip.copy(r.anchor);
+    }
+    if (r.state === 'retracting') {
+      const d = r.tip.distanceTo(_w), stepD = Math.max(S.ropeSpeed * 1.5, 150) * dt;
+      if (d <= stepD) r.state = 'idle';
+      else r.tip.lerp(_w, stepD / d);
+    }
+    // visuals
+    if (r.state === 'idle') { r.mesh.visible = false; r.dot.visible = false; continue; }
+    const v = new THREE.Vector3().subVectors(r.tip, _w), L = v.length();
+    if (L < 0.01) { r.mesh.visible = false; } else {
+      r.mesh.visible = true;
+      r.mesh.position.copy(_w).addScaledVector(v, 0.5);
+      r.mesh.quaternion.setFromUnitVectors(UP, v.divideScalar(L));
+      r.mesh.scale.set(1, L, 1);
+    }
+    r.dot.visible = r.state === 'attached';
+    if (r.dot.visible) r.dot.position.copy(r.anchor);
+  }
+}
+
+// ====================================================================
+// Physics
+// ====================================================================
+const UP = new THREE.Vector3(0, 1, 0);
+const _in = { x: 0, z: 0 };
+function moveInput() {
+  const f = (keys.KeyW ? 1 : 0) - (keys.KeyS ? 1 : 0);
+  const s = (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0);
+  const fx = -Math.sin(cam.yaw), fz = -Math.cos(cam.yaw), rx = Math.cos(cam.yaw), rz = -Math.sin(cam.yaw);
+  let x = fx * f + rx * s, z = fz * f + rz * s;
+  const l = Math.hypot(x, z); if (l > 1) { x /= l; z /= l; }
+  _in.x = x; _in.z = z;
+  return _in;
+}
+
+const _P = new THREE.Vector3(), _n = new THREE.Vector3();
+function physicsStep(dt) {
+  const pos = player.pos, vel = player.vel;
+  const input = moveInput();
+  const attached = ropes.L.state === 'attached' || ropes.R.state === 'attached';
+
+  vel.y -= S.gravity * dt;
+  if (player.grounded) {
+    const speed = keys.ShiftLeft || keys.ShiftRight ? 15 : 7.5;
+    const k = 1 - Math.exp(-12 * dt);
+    vel.x += (input.x * speed - vel.x) * k;
+    vel.z += (input.z * speed - vel.z) * k;
+  } else {
+    const a = (attached ? 16 : 7) * S.airControl;
+    vel.x += input.x * a * dt; vel.z += input.z * a * dt;
+    const sp = vel.length();
+    vel.multiplyScalar(Math.max(0, 1 - 0.0012 * sp * dt));
+  }
+
+  const prevFeet = pos.y;
+  pos.addScaledVector(vel, dt);
+
+  // auto-tension right after attaching: rope shortens a bit and pulls the body
+  const REEL_SPEED = 14;
+  for (const r of Object.values(ropes)) {
+    r.reeling = 0;
+    if (r.state === 'attached' && r.len > r.targetLen) {
+      r.len = Math.max(r.targetLen, r.len - REEL_SPEED * dt);
+      r.reeling = REEL_SPEED;
+    }
+  }
+
+  // rope constraints (two passes so two ropes settle together)
+  for (let pass = 0; pass < 2; pass++) {
+    for (const r of Object.values(ropes)) {
+      if (r.state !== 'attached') continue;
+      _P.copy(pos).y += ROPE_ATTACH_Y;
+      _n.subVectors(_P, r.anchor);
+      const dist = _n.length();
+      if (dist <= r.len || dist < 1e-6) continue;
+      _n.divideScalar(dist);
+      const e = S.elasticity;
+      const stretch = dist - r.len;
+      const maxStretch = r.len * (0.02 + 0.45 * e);
+      if (e > 0.001 && stretch < maxStretch) {
+        if (pass === 0) {
+          const k = 900 * (1 - e) + 40 * e;
+          vel.addScaledVector(_n, -k * stretch * dt);
+          const vr = vel.dot(_n); if (vr > 0) vel.addScaledVector(_n, -vr * Math.min(1, 8 * dt));
+        }
+      } else {
+        const lim = e > 0.001 ? r.len + maxStretch : r.len;
+        pos.copy(r.anchor).addScaledVector(_n, lim); pos.y -= ROPE_ATTACH_Y;
+        const want = -(r.reeling || 0);
+        const vr = vel.dot(_n); if (vr > want) vel.addScaledVector(_n, want - vr);
+      }
+    }
+  }
+
+  // ground / roofs
+  let support = 0;
+  const cand = [...queryBuildings(pos.x - 2, pos.x + 2, pos.z - 2, pos.z + 2)];
+  for (const i of cand) {
+    const b = buildings[i];
+    if (b.h <= prevFeet + STEP_UP && b.h > support && pointInPoly(b, pos.x, pos.z)) support = b.h;
+  }
+  if (pos.y <= support) { pos.y = support; if (vel.y < 0) vel.y = 0; player.grounded = true; }
+  else player.grounded = false;
+
+  // walls
+  for (const i of cand) {
+    const b = buildings[i];
+    if (pos.y >= b.h - STEP_UP) continue;
+    const inside = pointInPoly(b, pos.x, pos.z);
+    const c = closestOnPoly(b, pos.x, pos.z);
+    let nx, nz;
+    if (inside) { nx = c.nx; nz = c.nz; }
+    else if (c.d < BODY_RADIUS && c.d > 1e-6) { nx = (pos.x - c.x) / c.d; nz = (pos.z - c.z) / c.d; }
+    else continue;
+    pos.x = c.x + nx * BODY_RADIUS; pos.z = c.z + nz * BODY_RADIUS;
+    const vn = vel.x * nx + vel.z * nz;
+    if (vn < 0) { vel.x -= nx * vn; vel.z -= nz * vn; }
+  }
+
+  const LIM = 1000;
+  pos.x = Math.max(-LIM, Math.min(LIM, pos.x)); pos.z = Math.max(-LIM, Math.min(LIM, pos.z));
+}
+
+function jump() {
+  if (player.grounded) { player.vel.y = 9; player.grounded = false; player.pos.y += 0.02; }
+}
+
+// ====================================================================
+// Character pose / camera
+// ====================================================================
+const DOWN = new THREE.Vector3(0, -1, 0);
+const _q = new THREE.Quaternion(), _e = new THREE.Euler(), _loc = new THREE.Vector3();
+function wrapAngle(a) { while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; }
+
+function updateCharacter(dt) {
+  const v = player.vel, hs = Math.hypot(v.x, v.z);
+  let target = player.facing;
+  if (cam.mode === 'first') target = cam.yaw;
+  else if (hs > 0.6) target = Math.atan2(-v.x, -v.z);
+  player.facing += wrapAngle(target - player.facing) * (cam.mode === 'first' ? 1 : Math.min(1, 10 * dt));
+  character.position.copy(player.pos);
+  character.rotation.set(0, player.facing, 0);
+  character.updateMatrixWorld(true);
+
+  const kk = 1 - Math.exp(-18 * dt);
+  if (player.grounded) {
+    player.walkPhase += dt * hs * 1.6;
+    const amp = Math.min(1, hs / 7) * 0.75, s = Math.sin(player.walkPhase);
+    legL.rotation.set(s * amp, 0, 0); legR.rotation.set(-s * amp, 0, 0);
+  } else {
+    legL.rotation.x += (0.45 - legL.rotation.x) * kk; legR.rotation.x += (-0.25 - legR.rotation.x) * kk;
+  }
+  const s = Math.sin(player.walkPhase), amp = player.grounded ? Math.min(1, hs / 7) * 0.6 : 0;
+  for (const [arm, rope, sideSign] of [[armL, ropes.L, -1], [armR, ropes.R, 1]]) {
+    if (rope.state !== 'idle') {
+      character.worldToLocal(_loc.copy(rope.state === 'attached' ? rope.anchor : rope.tip));
+      _loc.sub(arm.position).normalize();
+      _q.setFromUnitVectors(DOWN, _loc);
+    } else if (player.grounded) {
+      _q.setFromEuler(_e.set(-s * amp * sideSign, 0, sideSign * 0.08));
+    } else {
+      _q.setFromEuler(_e.set(-0.3, 0, sideSign * 0.7));
+    }
+    arm.quaternion.slerp(_q, kk);
+  }
+  head.visible = cam.mode !== 'first';
+  character.updateMatrixWorld(true);
+}
+
+function cameraBlocked(x, y, z) {
+  if (y < 0.25) return true;
+  for (const i of queryBuildings(x - 0.3, x + 0.3, z - 0.3, z + 0.3)) {
+    const b = buildings[i];
+    if (y < b.h + 0.3 && (pointInPoly(b, x, z) || closestOnPoly(b, x, z).d < 0.3)) return true;
+  }
+  return false;
+}
+
+const _tgt = new THREE.Vector3(), _cd = new THREE.Vector3();
+function updateCamera(dt) {
+  camDir(_cd);
+  const speed = player.vel.length();
+  const fov = S.fov + Math.max(0, Math.min(18, (speed - 15) * 0.35));
+  camera.fov += (fov - camera.fov) * Math.min(1, 4 * dt);
+  camera.updateProjectionMatrix();
+  if (cam.mode === 'first') {
+    head.getWorldPosition(_tgt);
+    _tgt.x += -Math.sin(cam.yaw) * 0.08; _tgt.z += -Math.cos(cam.yaw) * 0.08;
+    camera.position.copy(_tgt);
+    cam.actualDist = 0;
+  } else {
+    const rx = Math.cos(cam.yaw), rz = -Math.sin(cam.yaw);
+    _tgt.copy(player.pos); _tgt.y += 1.6; _tgt.x += rx * 0.7; _tgt.z += rz * 0.7;
+    let d = 0;
+    for (; d < cam.dist; d += 0.25) {
+      if (cameraBlocked(_tgt.x - _cd.x * d, _tgt.y - _cd.y * d, _tgt.z - _cd.z * d)) break;
+    }
+    d = Math.max(0.6, Math.min(cam.dist, d - 0.2));
+    cam.actualDist = d < cam.actualDist ? d : cam.actualDist + (d - cam.actualDist) * Math.min(1, 6 * dt);
+    camera.position.copy(_tgt).addScaledVector(_cd, -cam.actualDist);
+  }
+  camera.lookAt(_tgt.copy(camera.position).add(_cd));
+  // keep shadow camera around the player
+  sun.target.position.copy(player.pos);
+  sun.position.copy(player.pos).addScaledVector(SUN_DIR, 400);
+}
+
+// ====================================================================
+// HUD + minimap
+// ====================================================================
+const hud = document.getElementById('hud');
+const crosshair = document.getElementById('crosshair');
+const mm = document.getElementById('minimap'), mmg = mm.getContext('2d');
+let bMinX = Infinity, bMaxX = -Infinity, bMinZ = Infinity, bMaxZ = -Infinity;
+for (const b of buildings) { bMinX = Math.min(bMinX, b.minX); bMaxX = Math.max(bMaxX, b.maxX); bMinZ = Math.min(bMinZ, b.minZ); bMaxZ = Math.max(bMaxZ, b.maxZ); }
+const mmSpan = Math.max(bMaxX - bMinX, bMaxZ - bMinZ) * 1.04, mmCx = (bMinX + bMaxX) / 2, mmCz = (bMinZ + bMaxZ) / 2;
+const mmBase = document.createElement('canvas'); mmBase.width = mmBase.height = 360;
+{
+  const g = mmBase.getContext('2d'), sc = 360 / mmSpan;
+  const tx = x => (x - mmCx) * sc + 180, tz = z => (z - mmCz) * sc + 180;
+  g.strokeStyle = 'rgba(40,44,50,0.9)'; g.lineCap = 'round';
+  for (const [w, arr] of DATA.roads) {
+    g.lineWidth = Math.max(1, w * sc); g.beginPath();
+    for (let i = 0; i < arr.length; i += 2) (i ? g.lineTo : g.moveTo).call(g, tx(arr[i]), tz(arr[i + 1]));
+    g.stroke();
+  }
+  for (const b of buildings) {
+    const t = Math.min(1, b.h / 120);
+    g.fillStyle = `rgb(${150 + t * 90 | 0},${160 + t * 70 | 0},${175 + t * 60 | 0})`;
+    g.beginPath();
+    for (let i = 0; i < b.n; i++) (i ? g.lineTo : g.moveTo).call(g, tx(b.pts[2 * i]), tz(b.pts[2 * i + 1]));
+    g.closePath(); g.fill();
+  }
+}
+function drawMinimap() {
+  mmg.clearRect(0, 0, 360, 360);
+  mmg.drawImage(mmBase, 0, 0);
+  const sc = 360 / mmSpan, x = (player.pos.x - mmCx) * sc + 180, z = (player.pos.z - mmCz) * sc + 180;
+  for (const r of Object.values(ropes)) if (r.state === 'attached') {
+    mmg.strokeStyle = '#ffffff'; mmg.lineWidth = 2; mmg.beginPath();
+    mmg.moveTo(x, z); mmg.lineTo((r.anchor.x - mmCx) * sc + 180, (r.anchor.z - mmCz) * sc + 180); mmg.stroke();
+  }
+  mmg.save(); mmg.translate(x, z); mmg.rotate(-cam.yaw);
+  mmg.fillStyle = '#3fc1c9'; mmg.strokeStyle = '#0b1620'; mmg.lineWidth = 2;
+  mmg.beginPath(); mmg.moveTo(0, -11); mmg.lineTo(7, 8); mmg.lineTo(0, 4); mmg.lineTo(-7, 8); mmg.closePath(); mmg.fill(); mmg.stroke();
+  mmg.restore();
+}
+let hudTimer = 0;
+const ROPE_LABEL = { idle: '—', flying: '발사 중', attached: '연결', retracting: '회수' };
+function updateHUD(dt) {
+  crosshair.classList.toggle('ok', state.aimInRange);
+  hudTimer += dt; if (hudTimer < 0.1) return; hudTimer = 0;
+  const kmh = player.vel.length() * 3.6;
+  const dist = state.aimHit ? state.aimHit.point.distanceTo(_chest.copy(player.pos).setY(player.pos.y + ROPE_ATTACH_Y)) : null;
+  hud.innerHTML =
+    `속도 <b>${kmh.toFixed(0)}</b> km/h · 높이 <b>${player.pos.y.toFixed(1)}</b> m<br>` +
+    `시점 <b>${cam.mode === 'third' ? '3인칭' : '1인칭'}</b> · 조준 거리 <b>${dist === null ? '—' : dist.toFixed(0) + ' m'}</b>${dist !== null && !state.aimInRange ? ' (사거리 밖)' : ''}<br>` +
+    `왼손 줄 <b>${ROPE_LABEL[ropes.L.state]}</b> · 오른손 줄 <b>${ROPE_LABEL[ropes.R.state]}</b>` +
+    (state.fallback ? `<br><span style="color:#ffcf7a">마우스 고정 없음 모드 · 마우스를 화면 끝으로 밀거나 방향키로 시야 회전</span>` : '');
+  drawMinimap();
+}
+
+// ====================================================================
+// Input
+// ====================================================================
+const overlay = document.getElementById('overlay'), msg = document.getElementById('msg');
+const canvas = renderer.domElement;
+const isLocked = () => document.pointerLockElement === canvas;
+
+// Game can run in two modes:
+//  - pointer lock (normal): mouse moves the view without limits
+//  - fallback (browsers/panes without pointer lock): mouse movement still turns the view,
+//    pushing the cursor to a screen edge keeps turning, arrow keys also turn.
+function setActive(on, fallback) {
+  state.paused = !on;
+  state.fallback = !!(on && fallback);
+  overlay.classList.toggle('hidden', on);
+  document.body.classList.toggle('nocursor', on && !!fallback);
+  if (!on) { releaseRope('L'); releaseRope('R'); for (const k in keys) keys[k] = false; }
+}
+function enterFallback() {
+  if (!state.paused || isLocked()) return;
+  setActive(true, true);
+}
+function startGame() {
+  msg.textContent = '';
+  let p;
+  try { p = canvas.requestPointerLock(); } catch (e) { enterFallback(); return; }
+  if (p && p.then) p.then(() => {}, enterFallback);
+  else setTimeout(() => { if (!isLocked()) enterFallback(); }, 400);
+}
+document.getElementById('play').addEventListener('click', startGame);
+document.addEventListener('pointerlockerror', enterFallback);
+document.addEventListener('pointerlockchange', () => {
+  if (isLocked()) setActive(true, false);
+  else if (!state.fallback) setActive(false);
+});
+document.addEventListener('mousemove', e => {
+  state.mouseX = e.clientX; state.mouseY = e.clientY; state.mouseIn = true;
+  if (state.paused) return;
+  const k = 0.0022 * S.sensitivity;
+  cam.yaw -= e.movementX * k;
+  cam.pitch = Math.max(-1.45, Math.min(1.45, cam.pitch - e.movementY * k));
+});
+document.addEventListener('mouseleave', () => { state.mouseIn = false; });
+document.addEventListener('mousedown', e => {
+  if (state.paused) return;
+  e.preventDefault();
+  if (e.button === 0) fireRope('L');
+  else if (e.button === 2) fireRope('R');
+});
+document.addEventListener('mouseup', e => {
+  if (e.button === 0) releaseRope('L');
+  else if (e.button === 2) releaseRope('R');
+});
+document.addEventListener('contextmenu', e => e.preventDefault());
+document.addEventListener('keydown', e => {
+  if (state.paused) return;
+  if (e.code === 'Escape' && state.fallback) { setActive(false); return; }
+  keys[e.code] = true;
+  if (e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault();
+  if (e.code === 'Space') jump();
+  if (e.code === 'KeyV' && !e.repeat) cam.mode = cam.mode === 'third' ? 'first' : 'third';
+  if (e.code === 'KeyR' && !e.repeat) resetPlayer();
+});
+document.addEventListener('keyup', e => { keys[e.code] = false; });
+window.addEventListener('blur', () => { for (const k in keys) keys[k] = false; releaseRope('L'); releaseRope('R'); });
+
+function updateLookKeys(dt) {
+  const yawRate = 2.2, pitchRate = 1.5;
+  let dy = (keys.ArrowLeft ? 1 : 0) - (keys.ArrowRight ? 1 : 0);
+  let dp = (keys.ArrowUp ? 1 : 0) - (keys.ArrowDown ? 1 : 0);
+  if (state.fallback && state.mouseIn) {
+    const ex = state.mouseX / window.innerWidth, ey = state.mouseY / window.innerHeight, m = 0.05;
+    if (ex < m) dy += 1 - ex / m; else if (ex > 1 - m) dy -= 1 - (1 - ex) / m;
+    if (ey < m) dp += 1 - ey / m; else if (ey > 1 - m) dp -= 1 - (1 - ey) / m;
+  }
+  cam.yaw += dy * yawRate * dt;
+  cam.pitch = Math.max(-1.45, Math.min(1.45, cam.pitch + dp * pitchRate * dt));
+}
+
+// ====================================================================
+// Main loop
+// ====================================================================
+resetPlayer();
+let last = performance.now();
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  tick(dt);
+}
+function tick(dt) {
+  if (!state.paused) { updateLookKeys(dt); const N = 4; for (let i = 0; i < N; i++) physicsStep(dt / N); }
+  updateCharacter(dt);
+  if (!state.paused) updateRopes(dt);
+  updateCamera(dt);
+  computeAim();
+  updateHUD(dt);
+  renderer.render(scene, camera);
+}
+document.getElementById('loading').remove();
+requestAnimationFrame(frame);
+
+// debug/test hooks
+window.__game = { player, cam, ropes, state, keys, fireRope, releaseRope, jump, resetPlayer, buildings, S, estimated, tick };
+console.log(`buildings: ${buildings.length} (estimated heights: ${estimated}), roads: ${DATA.roads.length}, snapshot: ${DATA.snapshot}`);
+</script>
+</body>
+</html>

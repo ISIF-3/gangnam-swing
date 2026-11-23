@@ -1,0 +1,5 @@
+.claude/
+.vscode/
+Thumbs.db
+desktop.ini
+*.log
