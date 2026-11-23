@@ -59,7 +59,7 @@
 <div id="combo"></div>
 <div id="pop"></div>
 <canvas id="minimap" width="360" height="360"></canvas>
-<div id="keys">좌/우클릭 줄 · WASD 이동 · Space 점프/잡아채기/벽 점프 · Shift 달리기/줄 감기 · V 시점 · Esc 설정</div>
+<div id="keys">좌/우클릭 줄 · WASD 이동 · Space 점프/잡아채기/벽 점프/활공(누르기) · Shift 달리기/줄 감기/다이브 · V 시점 · Esc 설정</div>
 <div id="attrib">지도 데이터 © OpenStreetMap contributors (ODbL)</div>
 
 <div id="overlay">
@@ -74,6 +74,7 @@
           <li><kbd>Space</kbd>점프 · 매달린 중엔 잡아채기 (튕겨 날아가기)</li>
           <li><kbd>Shift</kbd>달리기 · 매달린 중엔 줄 감기</li>
           <li>공중에서 벽에 닿은 채 이동 키 = 벽 달리기 · 벽에서 <kbd>Space</kbd> = 벽 점프</li>
+          <li>줄 없이 떨어지는 중 <kbd>Shift</kbd> 다이브 (빨리 떨어짐) · <kbd>Space</kbd> 누르고 있기 = 활공 (보는 방향으로, 아래를 보면 빨라짐)</li>
           <li><kbd>좌클릭</kbd>왼손 줄 (누르고 있기 = 매달림)</li>
           <li><kbd>우클릭</kbd>오른손 줄</li>
           <li><kbd>V</kbd>3인칭 / 1인칭 전환</li>
@@ -105,7 +106,7 @@ import * as THREE from 'three';
 // ====================================================================
 // Settings
 // ====================================================================
-const DEFAULTS = { ropeSpeed: 200, ropeRange: 120, ropePull: 0.15, reelSpeed: 14, yankPower: 20, releaseBoost: 1.0, elasticity: 0.15, gravity: 22, airControl: 1.0, sensitivity: 1.0, fov: 70 };
+const DEFAULTS = { ropeSpeed: 200, ropeRange: 120, ropePull: 0.15, reelSpeed: 14, yankPower: 20, releaseBoost: 1.0, gravity: 22, airControl: 1.0, sensitivity: 1.0, fov: 70 };
 const S = { ...DEFAULTS };
 try { const saved = JSON.parse(localStorage.getItem('gangnam_swing_settings') || 'null'); if (saved) for (const k in DEFAULTS) if (typeof saved[k] === 'number') S[k] = saved[k]; } catch (e) {}
 function saveSettings() { try { localStorage.setItem('gangnam_swing_settings', JSON.stringify(S)); } catch (e) {} }
@@ -117,7 +118,6 @@ const SLIDERS = [
   ['reelSpeed', '줄 감기 속도 (Shift)', 4, 30, 1, ' m/s'],
   ['yankPower', '잡아채기 힘 (Space)', 5, 40, 1, ' m/s'],
   ['releaseBoost', '놓을 때 가속', 0, 2, 0.1, '×'],
-  ['elasticity', '줄 탄성 (0 = 딱딱함)', 0, 1, 0.05, ''],
   ['gravity', '중력', 5, 40, 1, ' m/s²'],
   ['airControl', '공중 제어력', 0, 3, 0.1, '×'],
   ['sensitivity', '마우스 감도', 0.2, 3, 0.1, '×'],
@@ -548,7 +548,7 @@ function makeRope(side, wrist) {
   const dot = new THREE.Mesh(anchorGeo, ropeMat); dot.visible = false; scene.add(dot);
   return { side, wrist, dot, state: 'idle', held: false, hit: false, anchor: new THREE.Vector3(), launch: new THREE.Vector3(), dir: new THREE.Vector3(), tip: new THREE.Vector3(), tipDist: 0, targetDist: 0, len: 0, targetLen: 0,
            reeling: 0, tensionRaw: 0, tension: 0, tdir: new THREE.Vector3(),
-           pivots: [], wrapCool: 0 };   // pivots: building corners the rope is wrapped around (last = current swing center)
+           pivots: [], wrapCool: 0, loaded: false, slackT: 0, peakVt: 0, swingDone: false };   // pivots: building corners the rope is wrapped around (last = current swing center)
 }
 const ropes = { L: makeRope('L', wristL), R: makeRope('R', wristR) };
 const swingCenter = r => r.pivots.length ? r.pivots[r.pivots.length - 1] : r.anchor;
@@ -630,7 +630,7 @@ function stepRopes(dt) {
             _chest.copy(player.pos).y += ROPE_ATTACH_Y;
             r.len = Math.max(1.5, _chest.distanceTo(r.anchor));
             r.targetLen = Math.max(1.5, r.len * (1 - S.ropePull));
-            r.pivots.length = 0; r.wrapCool = 0;
+            r.pivots.length = 0; r.wrapCool = 0; r.loaded = false; r.slackT = 0; r.peakVt = 0; r.swingDone = false;
             if (!player.grounded) { addStyle(25, ''); bumpMult(0.25); }
           } else r.state = 'retracting';
         }
@@ -768,6 +768,15 @@ function physicsStep(dt) {
     if (wall.mode === 'run') addStyle(30 * dt, '');
   }
 
+  // Air moves (free flight only): hold Shift to dive (tuck in, fall faster), hold Space to glide.
+  player.airMode = '';
+  if (!player.grounded && !attached && !wall.mode) {
+    if (keys.Space && (vel.y < 0 || vel.length() > 12) && vel.length() > GLIDE_MIN) player.airMode = 'glide';
+    else if (shift) player.airMode = 'dive';
+  }
+  if (player.airMode === 'glide') gScale = 0;                 // gravity is handled along the flight path below
+  if (player.airMode === 'dive') gScale = 1.8;
+
   vel.y -= S.gravity * gScale * dt;
   if (wall.mode === 'cling') vel.y = Math.max(vel.y, -2.5);
   if (wall.mode === 'run' && vel.y < -2) vel.y += (-2 - vel.y) * Math.min(1, 6 * dt);
@@ -777,11 +786,20 @@ function physicsStep(dt) {
     const k = fx.roll > 0 ? 1 - Math.exp(-0.8 * dt) : 1 - Math.exp(-12 * dt);
     vel.x += (input.x * speed - vel.x) * k;
     vel.z += (input.z * speed - vel.z) * k;
+  } else if (player.airMode === 'glide') {
+    // Glide: fly where the camera looks (A/D bank a little). Pointing down trades height for speed,
+    // pointing up bleeds speed; speed settles where gravity along the path equals air drag.
+    camDir(_t);
+    _t.x += input.x * 0.35; _t.z += input.z * 0.35;
+    _t.y = clamp(_t.y, -0.9, 0.25); _t.normalize();
+    let sp = vel.length();
+    sp = Math.max(0, sp + (S.gravity * -_t.y - GLIDE_DRAG * sp * sp) * dt);
+    vel.lerp(_t.multiplyScalar(sp), 1 - Math.exp(-3 * dt)).setLength(sp);
   } else {
     const a = (attached ? 16 : 7) * S.airControl;
     vel.x += input.x * a * dt; vel.z += input.z * a * dt;
     const sp = vel.length();
-    vel.multiplyScalar(Math.max(0, 1 - 0.0012 * sp * dt));
+    if (player.airMode !== 'dive') vel.multiplyScalar(Math.max(0, 1 - 0.0012 * sp * dt));   // diving body has little drag
   }
 
   const prevFeet = pos.y;
@@ -839,24 +857,10 @@ function physicsStep(dt) {
       const dist = _n.length();
       if (dist <= r.len || dist < 1e-6) continue;
       _n.divideScalar(dist);
-      const e = S.elasticity;
-      const stretch = dist - r.len;
-      const maxStretch = r.len * (0.02 + 0.45 * e);
-      if (e > 0.001 && stretch < maxStretch) {
-        if (pass === 0) {
-          // stretchy rope = spring + critical damping on the radial motion, so it gives a little
-          // but does not bungee the body back inward (which would make the rope go slack)
-          const k = 900 * (1 - e) + 40 * e;
-          vel.addScaledVector(_n, -k * stretch * dt);
-          const vr = vel.dot(_n);
-          vel.addScaledVector(_n, -vr * Math.min(1, 2 * Math.sqrt(k) * dt));
-        }
-      } else {
-        const lim = e > 0.001 ? r.len + maxStretch : r.len;
-        pos.copy(swingCenter(r)).addScaledVector(_n, lim); pos.y -= ROPE_ATTACH_Y;
-        const want = -(r.reeling || 0);
-        const vr = vel.dot(_n); if (vr > want) vel.addScaledVector(_n, want - vr);
-      }
+      // the rope does not stretch: hold the body exactly at rope length, remove outward speed
+      pos.copy(swingCenter(r)).addScaledVector(_n, r.len); pos.y -= ROPE_ATTACH_Y;
+      const want = -(r.reeling || 0);
+      const vr = vel.dot(_n); if (vr > want) vel.addScaledVector(_n, want - vr);
     }
   }
 
@@ -901,19 +905,34 @@ function physicsStep(dt) {
   // Rope tension (as acceleration, m/s^2) for each taut rope.
   // Radial balance on a circle: T - g_toward_anchor = v_t^2 / r  ->  T = v_t^2 / r - G * n.y
   // (n points from anchor to body; below the anchor n.y < 0, so gravity adds to the tension).
+  let anyTaut = false;
   for (const r of Object.values(ropes)) {
     r.tensionRaw = 0;
     if (r.state !== 'attached') continue;
     _P.copy(pos).y += ROPE_ATTACH_Y;
     _n.subVectors(_P, swingCenter(r));
     const dist = _n.length();
-    if (dist < r.len - 0.05 || dist < 1e-3) continue;        // slack rope pulls nothing
+    if (dist < r.len - 0.05 || dist < 1e-3) { r.slackT += dt; continue; }   // slack rope pulls nothing
     _n.divideScalar(dist);
     const vr = vel.dot(_n), vt2 = Math.max(0, vel.lengthSq() - vr * vr);
     let T = vt2 / dist - S.gravity * _n.y;
     if (r.reeling) T += r.reeling * 1.5;
     r.tensionRaw = Math.min(Math.max(0, T), 120);
     r.tdir.copy(_n).negate();                                 // toward the anchor
+    r.slackT = 0;
+    if (T > 3) { r.loaded = true; anyTaut = true; }
+    const vt = Math.sqrt(vt2);
+    r.peakVt = Math.max(r.peakVt, vt);
+    // end of the swing: a real swing (fast at the bottom) has climbed until it almost stops
+    if (r.peakVt > 12 && vt < 2.5 && !player.grounded && !shift) r.swingDone = true;
+  }
+  // The rope lets go at the end of the swing (all the speed turned into height), or when it goes slack
+  // after carrying the body - instead of swinging back or hanging loose. Not while another rope still holds.
+  if (!player.grounded) for (const r of Object.values(ropes)) {
+    if (r.state !== 'attached') continue;
+    if (r.swingDone || (!anyTaut && r.loaded && r.slackT > 0.1)) {
+      r.state = 'retracting'; r.tip.copy(swingCenter(r)); r.tension = r.tensionRaw = 0;
+    }
   }
 }
 
@@ -941,6 +960,7 @@ function land(vy) {
   state.shake = Math.max(state.shake, Math.min(0.6, -vy / 60));
 }
 const WALL_TIME = 1.6, ROLL_TIME = 0.55, CROUCH_TIME = 0.35;
+const GLIDE_MIN = 6, GLIDE_DRAG = 0.008;   // glide: stalls below 6 m/s; 20 deg down settles near 30 m/s
 
 function jump() {
   const w = player.wall;
@@ -979,8 +999,10 @@ function updateCharacter(dt) {
   state.tensionG = pull / 9.81;
 
   // --- target "up" axis of the body ---
-  const fx = player.fx, wall = player.wall;
-  if (wall.mode) {
+  const fx = player.fx, wall = player.wall, air = player.airMode;
+  if (air && sp > 1) {
+    _up.copy(v);                                              // head first along the flight path, belly down
+  } else if (wall.mode) {
     _up.set(wall.nx * 0.45, 1, wall.nz * 0.45);              // lean out from the wall
   } else if (player.grounded) {
     _up.set(v.x * 0.012, 1, v.z * 0.012);                     // slight lean into running
@@ -993,7 +1015,8 @@ function updateCharacter(dt) {
 
   // --- target forward: direction of travel, kept perpendicular to the up axis ---
   const yawFwdX = -Math.sin(cam.yaw), yawFwdZ = -Math.cos(cam.yaw);
-  if (cam.mode === 'first') _fw.set(yawFwdX, 0, yawFwdZ);
+  if (air && sp > 1) _fw.set(0, -1, 0);
+  else if (cam.mode === 'first') _fw.set(yawFwdX, 0, yawFwdZ);
   else if (player.grounded) { if (hs > 0.6) _fw.set(v.x, 0, v.z); else _fw.copy(player.fwd); }
   else if (sp > 1.5) _fw.copy(v);
   else _fw.copy(player.fwd);
@@ -1009,7 +1032,7 @@ function updateCharacter(dt) {
   _bk.crossVectors(_rt, _up);
   _m4.makeBasis(_rt, _up, _bk);
   _qBody.setFromRotationMatrix(_m4);
-  const turnRate = cam.mode === 'first' && player.grounded ? 30 : player.grounded ? 12 : 5.5;
+  const turnRate = cam.mode === 'first' && player.grounded ? 30 : player.grounded ? 12 : air ? 8 : 5.5;
   const rolling = fx.roll > 0;
   if (rolling) {
     // forward roll: one full turn around the body's right axis, balled up around the hips
@@ -1035,6 +1058,8 @@ function updateCharacter(dt) {
   for (const [leg, side, ph] of [[legL, -1, 0], [legR, 1, Math.PI]]) {
     let k = 1 - Math.exp(-8 * dt);
     if (rolling) { _wt.set(side * 0.13, HIP_Y - 0.32, -0.32); k = 1 - Math.exp(-30 * dt); }
+    else if (air === 'glide') _wt.set(side * 0.24, HIP_Y - 0.83, 0.1);    // legs spread, straight back
+    else if (air === 'dive') _wt.set(side * 0.06, HIP_Y - 0.86, 0.03);    // legs together, pointed
     else if (cycle) {
       const a = player.walkPhase + ph;
       _wt.set(side * 0.11, ANKLE_Y + drop + lift * Math.max(0, Math.cos(a)), -Math.sin(a) * stride);
@@ -1062,6 +1087,8 @@ function updateCharacter(dt) {
          .multiplyScalar((arm.L1 + arm.L2) * 0.97).add(_sh);
       model.worldToLocal(_wt); k = 1 - Math.exp(-30 * dt);
     } else if (rolling) _wt.set(side * 0.2, HIP_Y - 0.05, -0.42);
+    else if (air === 'glide') _wt.set(side * 0.82, 1.46, 0.06);            // arms spread like wings
+    else if (air === 'dive') _wt.set(side * 0.2, 1.0, 0.14);               // arms pinned back along the body
     else if (player.grounded) {
       const swing = Math.sin(player.walkPhase + ph) * Math.min(0.35, hs * 0.045);   // opposite to the same-side leg
       _wt.set(side * 0.3, hs > 9 ? 1.08 : 0.92, swing);                              // running: elbows bent
@@ -1198,6 +1225,7 @@ function updateHUD(dt) {
     `왼손 줄 <b>${ROPE_LABEL[ropes.L.state]}</b> · 오른손 줄 <b>${ROPE_LABEL[ropes.R.state]}</b>` +
     ` · 장력 <b>${(state.tensionG || 0).toFixed(1)}</b> G${(ropes.L.reeling || ropes.R.reeling) && (keys.ShiftLeft || keys.ShiftRight) ? ' · <b>감는 중</b>' : ''}` +
     (player.wall.mode ? ` · <b>${player.wall.mode === 'run' ? '벽 달리기' : '벽 붙기'}</b>` : '') +
+    (player.airMode ? ` · <b>${player.airMode === 'glide' ? '활공' : '다이브'}</b>` : '') +
     (state.fallback ? `<br><span style="color:#ffcf7a">마우스 고정 없음 모드 · 마우스를 화면 끝으로 밀거나 방향키로 시야 회전</span>` : '');
   drawMinimap();
 }
