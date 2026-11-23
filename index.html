@@ -59,7 +59,7 @@
 <div id="combo"></div>
 <div id="pop"></div>
 <canvas id="minimap" width="360" height="360"></canvas>
-<div id="keys">좌/우클릭 줄 · WASD 이동 · Space 점프/잡아채기/벽 점프/활공(누르기) · Shift 달리기/줄 감기/다이브 · V 시점 · Esc 설정</div>
+<div id="keys">좌/우클릭 줄 · WASD 이동 · Space 점프/잡아채기/벽 점프 · Shift 달리기/줄 감기/다이브 · V 시점 · Esc 설정</div>
 <div id="attrib">지도 데이터 © OpenStreetMap contributors (ODbL)</div>
 
 <div id="overlay">
@@ -74,7 +74,7 @@
           <li><kbd>Space</kbd>점프 · 매달린 중엔 잡아채기 (튕겨 날아가기)</li>
           <li><kbd>Shift</kbd>달리기 · 매달린 중엔 줄 감기</li>
           <li>공중에서 벽에 닿은 채 이동 키 = 벽 달리기 · 벽에서 <kbd>Space</kbd> = 벽 점프</li>
-          <li>줄 없이 떨어지는 중 <kbd>Shift</kbd> 다이브 (빨리 떨어짐) · <kbd>Space</kbd> 누르고 있기 = 활공 (보는 방향으로, 아래를 보면 빨라짐)</li>
+          <li>줄 없이 떨어지는 중 <kbd>Shift</kbd> 다이브 (빨리 떨어짐)</li>
           <li><kbd>좌클릭</kbd>왼손 줄 (누르고 있기 = 매달림)</li>
           <li><kbd>우클릭</kbd>오른손 줄</li>
           <li><kbd>V</kbd>3인칭 / 1인칭 전환</li>
@@ -499,9 +499,10 @@ buildStreetProps();
 // ====================================================================
 // Character (simple original humanoid, faces -Z, origin at feet)
 // ====================================================================
-const suitMat = new THREE.MeshLambertMaterial({ color: 0x46566b });
-const accentMat = new THREE.MeshLambertMaterial({ color: 0x3fc1c9 });
-const visorMat = new THREE.MeshBasicMaterial({ color: 0xbff8ff });
+// An original runner in a navy tech jacket, grey pants and white sneakers, with cyan rope launchers on both wrists.
+const lam = color => new THREE.MeshLambertMaterial({ color });
+const skinMat = lam(0xd9a582), hairMat = lam(0x2b2119), jacketMat = lam(0x2e3b52), jacketDark = lam(0x222b3b),
+      pantsMat = lam(0x3b4048), shoeMat = lam(0xe8e8e4), soleMat = lam(0x2a2a2a), accentMat = lam(0x3fc1c9), eyeMat = lam(0x161616);
 
 // `character` is the body pivot, placed at the chest (where rope force acts) so the whole body
 // can tilt along the rope. `model` holds the parts with feet at local y = -PIVOT_Y.
@@ -512,7 +513,6 @@ const model = new THREE.Group();
 model.position.y = -PIVOT_Y;
 character.add(model);
 // Jointed body: pelvis -> spine -> chest -> neck -> head, two-bone arms and legs posed by IK each frame.
-const darkMat = new THREE.MeshLambertMaterial({ color: 0x2b3442 });
 function joint(parent, x, y, z) { const g = new THREE.Group(); g.position.set(x, y, z); parent.add(g); return g; }
 function part(geo, mat, parent, x, y, z) { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); parent.add(m); return m; }
 const HIP_Y = 0.95, ANKLE_Y = 0.08;
@@ -524,55 +524,64 @@ function taper(r0, r1, len, mat, parent, y, depth = 1) {
 const ball = (r, mat, parent, x, y, z) => part(new THREE.SphereGeometry(r, 14, 10), mat, parent, x, y, z);
 
 const pelvis = joint(model, 0, HIP_Y, 0);
-taper(0.15, 0.17, 0.18, darkMat, pelvis, 0.0, 0.68);                       // hips
+taper(0.15, 0.165, 0.2, pantsMat, pelvis, 0.0, 0.7);                       // hips
 const spine = joint(pelvis, 0, 0.08, 0);
-taper(0.145, 0.15, 0.24, suitMat, spine, 0.11, 0.7);                       // waist
-taper(0.16, 0.16, 0.045, accentMat, spine, 0.0, 0.72);                     // belt
-part(new THREE.BoxGeometry(0.06, 0.04, 0.02), accentMat, spine, 0, 0, -0.115);   // buckle
+taper(0.15, 0.155, 0.26, jacketMat, spine, 0.11, 0.72);                    // waist
+taper(0.165, 0.172, 0.05, jacketDark, spine, 0.0, 0.74);                   // jacket hem
+part(new THREE.BoxGeometry(0.012, 0.26, 0.01), accentMat, spine, 0, 0.12, -0.114);   // zipper
 const chest = joint(spine, 0, 0.22, 0);
-taper(0.215, 0.155, 0.32, suitMat, chest, 0.14, 0.62);                     // ribcage, wide at the shoulders
-ball(0.09, suitMat, chest, -0.08, 0.2, -0.065).scale.set(1, 0.7, 0.5);    // chest muscles
-ball(0.09, suitMat, chest, 0.08, 0.2, -0.065).scale.set(1, 0.7, 0.5);
-part(new THREE.BoxGeometry(0.11, 0.11, 0.02), accentMat, chest, 0, 0.12, -0.128).rotation.z = Math.PI / 4;  // emblem
-part(new THREE.BoxGeometry(0.18, 0.22, 0.07), darkMat, chest, 0, 0.16, 0.13);    // small back pack
-taper(0.07, 0.2, 0.08, suitMat, chest, 0.29, 0.55);                        // trapezius slope to the shoulders
+taper(0.205, 0.155, 0.32, jacketMat, chest, 0.14, 0.64);                   // ribcage, wide at the shoulders
+ball(0.085, jacketMat, chest, -0.075, 0.19, -0.068).scale.set(1, 0.7, 0.5);   // chest
+ball(0.085, jacketMat, chest, 0.075, 0.19, -0.068).scale.set(1, 0.7, 0.5);
+part(new THREE.BoxGeometry(0.012, 0.3, 0.01), accentMat, chest, 0, 0.14, -0.12).rotation.x = 0.11;   // zipper
+ball(0.12, jacketDark, chest, 0, 0.3, 0.075).scale.set(1.2, 0.45, 0.9);   // hood folded at the back of the neck
+taper(0.07, 0.2, 0.08, jacketMat, chest, 0.29, 0.55);                      // trapezius slope to the shoulders
 const neck = joint(chest, 0, 0.3, 0);
-taper(0.05, 0.06, 0.12, suitMat, neck, 0.04);
+taper(0.046, 0.054, 0.12, skinMat, neck, 0.04);
 const head = joint(neck, 0, 0.14, 0);
-ball(0.115, suitMat, head, 0, 0.01, 0).scale.set(0.9, 1.05, 1.02);        // helmet / skull
-ball(0.085, suitMat, head, 0, -0.06, -0.03).scale.set(0.85, 0.75, 0.9);   // jaw
-part(new THREE.BoxGeometry(0.17, 0.05, 0.05), visorMat, head, 0, 0.02, -0.095).rotation.x = -0.1;   // eye visor
-part(new THREE.BoxGeometry(0.02, 0.06, 0.03), darkMat, head, 0, -0.025, -0.11);   // nose ridge
+ball(0.105, skinMat, head, 0, 0, 0).scale.set(0.92, 1.12, 1);              // skull / face
+ball(0.078, skinMat, head, 0, -0.065, -0.025).scale.set(0.9, 0.8, 0.95);   // jaw
+const hair = part(new THREE.SphereGeometry(0.112, 18, 10, 0, Math.PI * 2, 0, Math.PI * 0.47), hairMat, head, 0, 0.02, 0.01);
+hair.scale.set(0.95, 1.12, 1.05); hair.rotation.x = 0.38;                  // short hair, hairline higher in front
+for (const s of [-1, 1]) {
+  ball(0.035, skinMat, head, s * 0.096, -0.01, 0.008).scale.set(0.4, 0.85, 0.6);             // ear
+  ball(0.012, eyeMat, head, s * 0.035, 0.012, -0.096);                                        // eye
+  part(new THREE.BoxGeometry(0.038, 0.008, 0.01), hairMat, head, s * 0.036, 0.038, -0.099);   // eyebrow
+}
+part(new THREE.BoxGeometry(0.024, 0.045, 0.03), skinMat, head, 0, -0.018, -0.106);            // nose
+part(new THREE.BoxGeometry(0.04, 0.006, 0.006), eyeMat, head, 0, -0.068, -0.099);            // mouth
 
 function makeArm(side) {
   const root = joint(chest, side * 0.25, 0.25, 0);
-  ball(0.075, suitMat, root, 0, 0, 0);                                     // shoulder
-  taper(0.062, 0.05, 0.3, suitMat, root, -0.15);                           // upper arm
-  part(new THREE.BoxGeometry(0.012, 0.22, 0.03), accentMat, root, side * 0.057, -0.15, 0);   // side stripe
+  ball(0.072, jacketMat, root, 0, 0, 0);                                   // shoulder
+  taper(0.06, 0.05, 0.3, jacketMat, root, -0.15);                          // upper arm (sleeve)
+  part(new THREE.BoxGeometry(0.012, 0.22, 0.03), accentMat, root, side * 0.055, -0.15, 0);   // sleeve stripe
   const mid = joint(root, 0, -0.3, 0);
-  ball(0.052, darkMat, mid, 0, 0, 0.01);                                   // elbow pad
-  taper(0.05, 0.04, 0.27, suitMat, mid, -0.135);                           // forearm
-  const end = joint(mid, 0, -0.27, 0);                                     // wrist: the rope fires from here
-  taper(0.052, 0.052, 0.06, accentMat, end, 0.035);                        // rope launcher band
-  // glove (bone frame: -Y along the arm, +Z = back, palm faces the body)
-  part(new THREE.BoxGeometry(0.03, 0.085, 0.08), darkMat, end, 0, -0.05, 0);                    // palm
-  part(new THREE.BoxGeometry(0.026, 0.07, 0.074), darkMat, end, -side * 0.008, -0.125, 0).rotation.z = -side * 0.25;  // fingers, curled in
-  part(new THREE.BoxGeometry(0.024, 0.05, 0.024), darkMat, end, -side * 0.018, -0.05, -0.048).rotation.x = 0.5;       // thumb
-  return { root, mid, end, L1: 0.3, L2: 0.27, cur: new THREE.Vector3(side * 0.29, 0.92, 0) };
+  ball(0.05, jacketMat, mid, 0, 0, 0);                                     // elbow
+  taper(0.05, 0.043, 0.22, jacketMat, mid, -0.11);                         // forearm sleeve
+  taper(0.046, 0.046, 0.03, jacketDark, mid, -0.225);                      // cuff
+  taper(0.036, 0.033, 0.05, skinMat, mid, -0.255);                         // wrist
+  const end = joint(mid, 0, -0.27, 0);                                     // wrist joint: the rope fires from here
+  taper(0.045, 0.045, 0.045, accentMat, end, 0.03);                        // rope launcher band
+  // hand (bone frame: -Y along the arm, +Z = back, palm faces the body)
+  part(new THREE.BoxGeometry(0.03, 0.085, 0.078), skinMat, end, 0, -0.05, 0);                    // palm
+  part(new THREE.BoxGeometry(0.025, 0.075, 0.072), skinMat, end, -side * 0.008, -0.125, 0).rotation.z = -side * 0.25;  // fingers, curled in
+  part(new THREE.BoxGeometry(0.022, 0.05, 0.022), skinMat, end, -side * 0.018, -0.05, -0.046).rotation.x = 0.5;       // thumb
+  return { root, mid, end, L1: 0.3, L2: 0.27, cur: new THREE.Vector3(side * 0.29, 0.92, 0), lastN: new THREE.Vector3(0, 0, 1) };
 }
 function makeLeg(side) {
   const root = joint(pelvis, side * 0.1, -0.02, 0);
-  taper(0.088, 0.064, 0.43, suitMat, root, -0.215);                        // thigh
-  part(new THREE.BoxGeometry(0.014, 0.32, 0.035), accentMat, root, side * 0.078, -0.2, 0);   // side stripe
+  taper(0.088, 0.064, 0.43, pantsMat, root, -0.215);                       // thigh
   const mid = joint(root, 0, -0.43, 0);
-  ball(0.064, darkMat, mid, 0, 0, -0.012).scale.set(1, 1, 0.9);            // knee pad
-  taper(0.062, 0.044, 0.42, suitMat, mid, -0.21);                          // shin
-  ball(0.055, suitMat, mid, 0, -0.14, 0.022).scale.set(0.9, 1.6, 0.8);     // calf
+  ball(0.062, pantsMat, mid, 0, 0, -0.008);                                // knee
+  taper(0.06, 0.046, 0.42, pantsMat, mid, -0.21);                          // shin
+  ball(0.052, pantsMat, mid, 0, -0.14, 0.022).scale.set(0.9, 1.6, 0.8);    // calf
   const end = joint(mid, 0, -0.42, 0);
-  part(new THREE.BoxGeometry(0.1, 0.075, 0.2), darkMat, end, 0, -0.04, -0.02);             // boot
-  ball(0.05, darkMat, end, 0, -0.045, -0.12).scale.set(1, 0.75, 1.2);      // toe
-  taper(0.05, 0.055, 0.06, darkMat, end, 0.01);                            // ankle cuff
-  return { root, mid, end, L1: 0.43, L2: 0.42, legs: true, cur: new THREE.Vector3(side * 0.1, ANKLE_Y, 0) };
+  part(new THREE.BoxGeometry(0.1, 0.08, 0.235), shoeMat, end, 0, -0.03, -0.03);            // sneaker
+  part(new THREE.BoxGeometry(0.106, 0.025, 0.25), soleMat, end, 0, -0.068, -0.03);         // sole
+  part(new THREE.BoxGeometry(0.108, 0.016, 0.1), accentMat, end, 0, -0.03, 0.0);           // side stripe
+  taper(0.05, 0.054, 0.05, pantsMat, end, 0.03);                           // pant cuff
+  return { root, mid, end, L1: 0.43, L2: 0.42, legs: true, cur: new THREE.Vector3(side * 0.1, ANKLE_Y, 0), lastN: new THREE.Vector3(0, 0, -1) };
 }
 const armL = makeArm(-1), armR = makeArm(1), legL = makeLeg(-1), legR = makeLeg(1);
 const wristL = armL.end, wristR = armR.end;
@@ -602,11 +611,18 @@ function solveIK(limb, target, pole) {
   let dist = _ikD.length();
   if (dist < 1e-4) return;
   _ikD.divideScalar(dist);
-  dist = Math.min(Math.max(dist, Math.abs(L1 - L2) + 0.05), (L1 + L2) * 0.999);
+  // reach limit eased in over the last 6%, so a target crossing it does not jolt the limb straight
+  const Lmax = (L1 + L2) * 0.999, knee = Lmax * 0.94;
+  if (dist > knee) dist = knee + (Lmax - knee) * Math.tanh((dist - knee) / (Lmax - knee));
+  dist = Math.max(dist, Math.abs(L1 - L2) + 0.05);
   const A = Math.acos(Math.min(1, Math.max(-1, (L1 * L1 + dist * dist - L2 * L2) / (2 * L1 * dist))));
   _ikN.copy(pole).addScaledVector(_ikD, -pole.dot(_ikD));
+  // memory of last frame's bend direction: when the reach lines up with the pole (pole gives no clear
+  // side), the elbow / knee keeps bending the way it did instead of flipping over in one frame
+  _ikN.addScaledVector(_ikP.copy(limb.lastN).addScaledVector(_ikD, -limb.lastN.dot(_ikD)), 0.6);
   if (_ikN.lengthSq() < 1e-6) _ikN.set(0, 0, 1).addScaledVector(_ikD, -_ikD.z);
   _ikN.normalize();
+  limb.lastN.copy(_ikN);
   _ikE.copy(_ikD).multiplyScalar(Math.cos(A)).addScaledVector(_ikN, Math.sin(A)).multiplyScalar(L1).add(_ikA);   // elbow / knee
   // bone +Z faces back like the rest pose: arms bend backward (toward the pole), legs forward (away from +Z)
   const back = limb.legs ? _ikP.copy(pole).negate() : pole;
@@ -649,7 +665,8 @@ function resetPlayer() {
   player.pos.copy(SPAWN); player.vel.set(0, 0, 0); player.grounded = true;
   prevPos.copy(SPAWN); renderPos.copy(SPAWN); physAcc = 0;
   cam.yaw = 0; cam.pitch = -0.12; player.facing = 0;
-  player.fwd.set(0, 0, -1); character.quaternion.identity();
+  player.fwd.set(0, 0, -1); character.quaternion.identity(); anim.qBase.identity();
+  anim.prevGrounded = true; anim.dip = anim.dipV = 0; anim.prevV.set(0, 0, 0); anim.acc.set(0, 0, 0);
   player.fx.roll = player.fx.crouch = 0; Object.assign(player.wall, { touch: false, since: 9, time: 0, mode: '' });
   for (const r of Object.values(ropes)) { r.state = 'idle'; r.held = false; r.tension = r.tensionRaw = 0; }
   endCombo(false);
@@ -669,7 +686,7 @@ function makeRope(side, wrist) {
   const dot = new THREE.Mesh(anchorGeo, ropeMat); dot.visible = false; scene.add(dot);
   return { side, wrist, dot, state: 'idle', held: false, hit: false, anchor: new THREE.Vector3(), launch: new THREE.Vector3(), dir: new THREE.Vector3(), tip: new THREE.Vector3(), tipDist: 0, targetDist: 0, len: 0, targetLen: 0,
            reeling: 0, tensionRaw: 0, tension: 0, tdir: new THREE.Vector3(),
-           pivots: [], wrapCool: 0, loaded: false, slackT: 0, peakVt: 0, swingDone: false };   // pivots: building corners the rope is wrapped around (last = current swing center)
+           pivots: [], wrapCool: 0 };   // pivots: building corners the rope is wrapped around (last = current swing center)
 }
 const ropes = { L: makeRope('L', wristL), R: makeRope('R', wristR) };
 const swingCenter = r => r.pivots.length ? r.pivots[r.pivots.length - 1] : r.anchor;
@@ -751,7 +768,7 @@ function stepRopes(dt) {
             _chest.copy(player.pos).y += ROPE_ATTACH_Y;
             r.len = Math.max(1.5, _chest.distanceTo(r.anchor));
             r.targetLen = Math.max(1.5, r.len * (1 - S.ropePull));
-            r.pivots.length = 0; r.wrapCool = 0; r.loaded = false; r.slackT = 0; r.peakVt = 0; r.swingDone = false;
+            r.pivots.length = 0; r.wrapCool = 0;
             if (!player.grounded) { addStyle(25, ''); bumpMult(0.25); }
           } else r.state = 'retracting';
         }
@@ -889,13 +906,8 @@ function physicsStep(dt) {
     if (wall.mode === 'run') addStyle(30 * dt, '');
   }
 
-  // Air moves (free flight only): hold Shift to dive (tuck in, fall faster), hold Space to glide.
-  player.airMode = '';
-  if (!player.grounded && !attached && !wall.mode) {
-    if (keys.Space && (vel.y < 0 || vel.length() > 12) && vel.length() > GLIDE_MIN) player.airMode = 'glide';
-    else if (shift) player.airMode = 'dive';
-  }
-  if (player.airMode === 'glide') gScale = 0;                 // gravity is handled along the flight path below
+  // Dive (free flight only): hold Shift to tuck in and fall faster.
+  player.airMode = !player.grounded && !attached && !wall.mode && shift ? 'dive' : '';
   if (player.airMode === 'dive') gScale = 1.8;
 
   vel.y -= S.gravity * gScale * dt;
@@ -907,15 +919,6 @@ function physicsStep(dt) {
     const k = fx.roll > 0 ? 1 - Math.exp(-0.8 * dt) : 1 - Math.exp(-12 * dt);
     vel.x += (input.x * speed - vel.x) * k;
     vel.z += (input.z * speed - vel.z) * k;
-  } else if (player.airMode === 'glide') {
-    // Glide: fly where the camera looks (A/D bank a little). Pointing down trades height for speed,
-    // pointing up bleeds speed; speed settles where gravity along the path equals air drag.
-    camDir(_t);
-    _t.x += input.x * 0.35; _t.z += input.z * 0.35;
-    _t.y = clamp(_t.y, -0.9, 0.25); _t.normalize();
-    let sp = vel.length();
-    sp = Math.max(0, sp + (S.gravity * -_t.y - GLIDE_DRAG * sp * sp) * dt);
-    vel.lerp(_t.multiplyScalar(sp), 1 - Math.exp(-3 * dt)).setLength(sp);
   } else {
     const a = (attached ? 16 : 7) * S.airControl;
     vel.x += input.x * a * dt; vel.z += input.z * a * dt;
@@ -1026,34 +1029,22 @@ function physicsStep(dt) {
   // Rope tension (as acceleration, m/s^2) for each taut rope.
   // Radial balance on a circle: T - g_toward_anchor = v_t^2 / r  ->  T = v_t^2 / r - G * n.y
   // (n points from anchor to body; below the anchor n.y < 0, so gravity adds to the tension).
-  let anyTaut = false;
   for (const r of Object.values(ropes)) {
     r.tensionRaw = 0;
     if (r.state !== 'attached') continue;
     _P.copy(pos).y += ROPE_ATTACH_Y;
     _n.subVectors(_P, swingCenter(r));
     const dist = _n.length();
-    if (dist < r.len - 0.05 || dist < 1e-3) { r.slackT += dt; continue; }   // slack rope pulls nothing
+    // In the air the rope never hangs loose: when the body moves toward the swing center the launcher
+    // takes up the slack, so the rope is always taut (it still never gets longer).
+    if (dist < r.len - 0.02 && !player.grounded && dist > MIN_ROPE) { r.len = dist; r.targetLen = Math.min(r.targetLen, dist); }
+    if (dist < r.len - 0.05 || dist < 1e-3) continue;        // slack rope (on the ground) pulls nothing
     _n.divideScalar(dist);
     const vr = vel.dot(_n), vt2 = Math.max(0, vel.lengthSq() - vr * vr);
     let T = vt2 / dist - S.gravity * _n.y;
     if (r.reeling) T += r.reeling * 1.5;
     r.tensionRaw = Math.min(Math.max(0, T), 120);
     r.tdir.copy(_n).negate();                                 // toward the anchor
-    r.slackT = 0;
-    if (T > 3) { r.loaded = true; anyTaut = true; }
-    const vt = Math.sqrt(vt2);
-    r.peakVt = Math.max(r.peakVt, vt);
-    // end of the swing: a real swing (fast at the bottom) has climbed until it almost stops
-    if (r.peakVt > 12 && vt < 2.5 && !player.grounded && !shift) r.swingDone = true;
-  }
-  // The rope lets go at the end of the swing (all the speed turned into height), or when it goes slack
-  // after carrying the body - instead of swinging back or hanging loose. Not while another rope still holds.
-  if (!player.grounded) for (const r of Object.values(ropes)) {
-    if (r.state !== 'attached') continue;
-    if (r.swingDone || (!anyTaut && r.loaded && r.slackT > 0.1)) {
-      r.state = 'retracting'; r.tip.copy(swingCenter(r)); r.tension = r.tensionRaw = 0;
-    }
   }
 }
 
@@ -1081,8 +1072,6 @@ function land(vy) {
   state.shake = Math.max(state.shake, Math.min(0.6, -vy / 60));
 }
 const WALL_TIME = 1.6, ROLL_TIME = 0.55, CROUCH_TIME = 0.35;
-const GLIDE_MIN = 6, GLIDE_DRAG = 0.008;   // glide: stalls below 6 m/s; 20 deg down settles near 30 m/s
-
 function jump() {
   const w = player.wall;
   if (player.grounded) { player.vel.y = 9; player.grounded = false; player.pos.y += 0.02; player.fx.roll = 0; }
@@ -1119,24 +1108,41 @@ function updateCharacter(dt) {
   const pull = _acc.length();
   state.tensionG = pull / 9.81;
 
-  // --- target "up" axis of the body ---
-  const fx = player.fx, wall = player.wall, air = player.airMode;
-  if (air && sp > 1) {
-    _up.copy(v);                                              // head first along the flight path, belly down
-  } else if (wall.mode) {
-    _up.set(wall.nx * 0.45, 1, wall.nz * 0.45);              // lean out from the wall
-  } else if (player.grounded) {
-    _up.set(v.x * 0.012, 1, v.z * 0.012);                     // slight lean into running
-  } else if (pull > 1.5) {
-    _up.copy(_acc).addScaledVector(UP, 1.5);                  // hang along the rope (head toward the anchor)
-  } else {
-    _up.set(clamp(v.x * 0.02, -0.5, 0.5), 1, clamp(v.z * 0.02, -0.5, 0.5)); // free fall: lean into motion
-  }
+  const fx = player.fx, wall = player.wall, W = anim.w;
+  anim.t += dt;
+
+  // --- which motion are we in? Every motion keeps a weight that eases toward 1 (active) or 0, and all
+  // poses below are mixed by these weights, so switching motion cross-fades instead of snapping. ---
+  const mode = player.airMode === 'dive' ? 'dive' : wall.mode ? 'wall' : player.grounded ? 'ground' : attachedAny() ? 'swing' : 'air';
+  const rate = mode === 'ground' && !anim.prevGrounded ? 16 : 9;           // plant the feet quickly on landing
+  for (const m of MODES) W[m] += ((m === mode ? 1 : 0) - W[m]) * (1 - Math.exp(-rate * dt));
+  anim.roll += ((fx.roll > 0 ? 1 : 0) - anim.roll) * (1 - Math.exp(-(fx.roll > 0 ? 16 : 10) * dt));
+  const gaitW = W.ground + W.wall, flyW = W.air + W.swing;
+
+  // landing: the hips dip and spring back up (a damped spring kicked by the fall speed)
+  if (player.grounded && !anim.prevGrounded) anim.dipV += Math.min(3, Math.max(0, -anim.prevVy) * 0.11);
+  anim.dipV += (-140 * anim.dip - 13 * anim.dipV) * dt;
+  anim.dip = Math.max(-0.05, anim.dip + anim.dipV * dt);
+  anim.prevGrounded = player.grounded; anim.prevVy = v.y;
+  // smoothed acceleration: runners lean into speeding up and into turns
+  if (dt > 0) { _tmp.subVectors(v, anim.prevV).divideScalar(dt); anim.acc.lerp(_tmp, 1 - Math.exp(-6 * dt)); }
+  anim.prevV.copy(v);
+
+  // --- target "up" axis of the body, mixed from each motion ---
+  _up.set(0, 0, 0);
+  const addUp = (w, x, y, z) => { if (w > 1e-3) _up.addScaledVector(_tmp.set(x, y, z).normalize(), w); };
+  addUp(W.ground, clamp(anim.acc.x * 0.03 + v.x * 0.01, -0.35, 0.35), 1, clamp(anim.acc.z * 0.03 + v.z * 0.01, -0.35, 0.35));
+  addUp(W.air, clamp(v.x * 0.02, -0.5, 0.5), 1, clamp(v.z * 0.02, -0.5, 0.5));       // free fall: lean into motion
+  if (pull > 1.5) addUp(W.swing, _acc.x, _acc.y + 1.5, _acc.z);                   // hang along the rope
+  else addUp(W.swing, clamp(v.x * 0.02, -0.5, 0.5), 1, clamp(v.z * 0.02, -0.5, 0.5));
+  addUp(W.wall, wall.nx * 0.45, 1, wall.nz * 0.45);                               // lean out from the wall
+  if (sp > 1) addUp(W.dive, v.x, v.y, v.z); else addUp(W.dive, 0, 1, 0);          // head first along the fall
+  if (_up.lengthSq() < 0.01) _up.set(0, 1, 0).applyQuaternion(anim.qBase);
   _up.normalize();
 
   // --- target forward: direction of travel, kept perpendicular to the up axis ---
   const yawFwdX = -Math.sin(cam.yaw), yawFwdZ = -Math.cos(cam.yaw);
-  if (air && sp > 1) _fw.set(0, -1, 0);
+  if (mode === 'dive' && sp > 1) _fw.set(0, -1, 0);
   else if (cam.mode === 'first') _fw.set(yawFwdX, 0, yawFwdZ);
   else if (player.grounded) { if (hs > 0.6) _fw.set(v.x, 0, v.z); else _fw.copy(player.fwd); }
   else if (sp > 1.5) _fw.copy(v);
@@ -1153,81 +1159,129 @@ function updateCharacter(dt) {
   _bk.crossVectors(_rt, _up);
   _m4.makeBasis(_rt, _up, _bk);
   _qBody.setFromRotationMatrix(_m4);
-  const turnRate = cam.mode === 'first' && player.grounded ? 30 : player.grounded ? 12 : air ? 8 : 5.5;
-  const rolling = fx.roll > 0;
-  if (rolling) {
-    // forward roll: one full turn around the body's right axis, balled up around the hips
-    character.quaternion.copy(_qBody).multiply(_q.setFromAxisAngle(X_AXIS, -2 * Math.PI * (1 - fx.roll / ROLL_TIME)));
-  } else character.quaternion.slerp(_qBody, 1 - Math.exp(-turnRate * dt));
-  // hard landing: hips dip and come back up
-  const drop = fx.crouch > 0 ? 0.3 * Math.sin(Math.PI * (1 - fx.crouch / CROUCH_TIME)) : 0;
-  character.position.copy(renderPos).y += rolling ? 0.5 : PIVOT_Y;
-  model.position.y = rolling ? -(HIP_Y - 0.05) : -PIVOT_Y - drop;
+  const turnRate = W.ground * (cam.mode === 'first' ? 30 : 12) + (flyW + W.wall) * 5.5 + W.dive * 8;
+  anim.qBase.slerp(_qBody, 1 - Math.exp(-turnRate * dt));
+  // forward roll on a hard landing: one full turn around the right axis on top of the normal orientation
+  const rollAngle = fx.roll > 0 ? -2 * Math.PI * (1 - fx.roll / ROLL_TIME) : 0;
+  character.quaternion.copy(anim.qBase).multiply(_q.setFromAxisAngle(X_AXIS, rollAngle));
+
+  // --- gait (walk -> run): stance foot glued to the ground sliding back under the body, swing foot lifted
+  // and brought forward; stride, cadence, bounce and arm pump all grow smoothly with speed ---
+  const gs = hs, moveF = Math.min(1, gs / 1.2);
+  anim.run += (clamp((gs - 3) / 3, 0, 1) - anim.run) * (1 - Math.exp(-4 * dt));
+  // cadence is set so the planted foot moves back exactly as fast as the body moves forward (no skating),
+  // up to a sprinter's ~2.6 strides/s; running lowers the hips so the knees stay a little bent
+  const run = anim.run, A = Math.min(0.44, 0.25 + 0.06 * gs) * moveF, duty = 0.62 - 0.29 * run;
+  if (gaitW > 0.01 && gs > 0.05) anim.phase = (anim.phase + Math.min(2.8, (gs * duty) / (2 * Math.max(A, 0.1))) * dt) % 1;
+  const lift = (0.1 + 0.16 * run) * moveF;
+  const bob = (0.012 + 0.04 * run) * moveF * (0.5 + 0.5 * Math.cos(4 * Math.PI * (anim.phase - duty / 2))) * gaitW;
+  const groundY = anim.dip + bob + 0.1 * run * moveF * gaitW;             // ground height in body space
+
+  // body height: lowered by landing dip and running bounce; balled up around the hips while rolling
+  character.position.copy(renderPos).y += PIVOT_Y + (0.5 - PIVOT_Y) * anim.roll;
+  model.position.y = (-PIVOT_Y - groundY) * (1 - anim.roll) - (HIP_Y - 0.05) * anim.roll;
   character.updateMatrixWorld(true);
 
-  // --- limbs: pick a target point for each hand / ankle (body space), ease toward it, solve IK ---
   _qInv.copy(character.quaternion).invert();
   _lv.copy(v).applyQuaternion(_qInv);                         // velocity in body space (-z = forward)
-  const cycle = player.grounded || wall.mode === 'run';
-  const cycleSpeed = player.grounded ? hs : sp;
-  if (cycle) player.walkPhase += dt * cycleSpeed * 1.6;
-  const stride = Math.min(0.42, cycleSpeed * 0.055), lift = Math.min(0.24, cycleSpeed * 0.03);
-  spine.rotation.x = rolling ? -0.7 : player.grounded ? -Math.min(0.35, hs * 0.025) - drop : wall.mode ? -0.15 : 0;
-
   const trail = clamp(_lv.z * 0.03, -1.1, 1.1), spread = clamp(-_lv.x * 0.02, -0.5, 0.5);
-  const tuck = !attachedAny() && v.y > 3;                      // knees up while rising freely
-  for (const [leg, side, ph] of [[legL, -1, 0], [legR, 1, Math.PI]]) {
-    let k = 1 - Math.exp(-8 * dt);
-    if (rolling) { _wt.set(side * 0.13, HIP_Y - 0.32, -0.32); k = 1 - Math.exp(-30 * dt); }
-    else if (air === 'glide') _wt.set(side * 0.24, HIP_Y - 0.83, 0.1);    // legs spread, straight back
-    else if (air === 'dive') _wt.set(side * 0.06, HIP_Y - 0.86, 0.03);    // legs together, pointed
-    else if (cycle) {
-      const a = player.walkPhase + ph;
-      _wt.set(side * 0.11, ANKLE_Y + drop + lift * Math.max(0, Math.cos(a)), -Math.sin(a) * stride);
-      k = 1 - Math.exp(-30 * dt);
-    } else {
-      // air: legs trail behind the motion (drag); straighter under strong pull
+  const tuck = mode === 'air' && v.y > 3 ? 1 : 0;              // knees up while rising freely
+
+  // --- legs: mix each motion's ankle target, then IK ---
+  const legZ = {};
+  for (const [leg, side, off] of [[legL, -1, 0], [legR, 1, 0.5]]) {
+    _blend.set(0, 0, 0);
+    if (gaitW > 1e-3) _blend.addScaledVector(gaitFoot((anim.phase + off) % 1, A, duty, lift, run, side, groundY), gaitW);
+    if (flyW > 1e-3) {
+      // flying: legs trail behind the motion (drag); straighter under strong pull
       const th = trail + (side < 0 ? 0.3 : -0.18) * (pull > 15 ? 0.35 : 1);
-      const reach = (leg.L1 + leg.L2) * (pull > 15 ? 0.97 : tuck ? 0.62 : 0.86);
-      _wt.set(side * 0.13 + spread, HIP_Y - 0.02 - Math.cos(th) * reach, -Math.sin(th) * reach);
+      const reach = (leg.L1 + leg.L2) * (pull > 15 ? 0.97 : 0.86 - 0.24 * tuck);
+      _blend.addScaledVector(_tmp.set(side * 0.13 + spread, HIP_Y - 0.02 - Math.cos(th) * reach, -Math.sin(th) * reach), flyW);
     }
-    leg.cur.lerp(_wt, k);
+    if (W.dive > 1e-3) _blend.addScaledVector(_tmp.set(side * 0.06, HIP_Y - 0.86, 0.03), W.dive);   // legs together, pointed
+    _blend.divideScalar(gaitW + flyW + W.dive || 1);
+    _blend.lerp(_tmp.set(side * 0.13, HIP_Y - 0.32, -0.32), anim.roll);                           // tucked for the roll
+    legZ[side] = _blend.z;
+    leg.cur.lerp(_blend, 1 - Math.exp(-60 * dt));
     _pole.set(0, 0.15, -1).transformDirection(model.matrixWorld);          // knees bend forward
     solveIK(leg, model.localToWorld(_wt.copy(leg.cur)), _pole);
-    // keep the foot level with the body
+    // foot: level with the ground when standing, with the body otherwise
+    _q.setFromAxisAngle(UP, Math.atan2(-player.fwd.x, -player.fwd.z));
+    _qLeg.copy(character.quaternion).slerp(_q, W.ground * (1 - anim.roll));
     leg.mid.getWorldQuaternion(_q).invert();
-    leg.end.quaternion.copy(_q).multiply(character.quaternion);
+    leg.end.quaternion.copy(_q).multiply(_qLeg);
   }
 
-  for (const [arm, rope, side, ph] of [[armL, ropes.L, -1, 0], [armR, ropes.R, 1, Math.PI]]) {
-    let k = 1 - Math.exp(-18 * dt);
-    if (rope.state !== 'idle') {
-      // reach straight toward the rope
-      arm.root.getWorldPosition(_sh);
-      _wt.subVectors(rope.state === 'attached' ? swingCenter(rope) : rope.tip, _sh).normalize()
-         .multiplyScalar((arm.L1 + arm.L2) * 0.97).add(_sh);
-      model.worldToLocal(_wt); k = 1 - Math.exp(-30 * dt);
-    } else if (rolling) _wt.set(side * 0.2, HIP_Y - 0.05, -0.42);
-    else if (air === 'glide') _wt.set(side * 0.82, 1.46, 0.06);            // arms spread like wings
-    else if (air === 'dive') _wt.set(side * 0.2, 1.0, 0.14);               // arms pinned back along the body
-    else if (player.grounded) {
-      const swing = Math.sin(player.walkPhase + ph) * Math.min(0.35, hs * 0.045);   // opposite to the same-side leg
-      _wt.set(side * 0.3, hs > 9 ? 1.08 : 0.92, swing);                              // running: elbows bent
-    } else {
-      // free arm in the air: out for balance, pushed back a bit by the airflow
-      _wt.set(side * 0.78, 1.42, clamp(0.12 + _lv.z * 0.01, -0.3, 0.4));
+  // --- arms: mix each motion's hand target; a rope arm fades into reaching along its rope ---
+  const armZ = {};
+  for (const [arm, rope, side] of [[armL, ropes.L, -1], [armR, ropes.R, 1]]) {
+    _blend.set(0, 0, 0);
+    if (gaitW > 1e-3) {
+      // swing opposite to the same-side leg; running: elbows bent ~90 deg, hands pump higher in front
+      const z = 0.35 * Math.tanh((-legZ[side] * (0.55 + 0.2 * run)) / 0.35);              // soft limit, no kinks
+      _blend.addScaledVector(_tmp.set(side * (0.29 - 0.06 * run), 0.9 + run * (0.12 + 0.1 * Math.tanh(-z / 0.3)), z), gaitW);
     }
-    arm.cur.lerp(_wt, k);
+    if (flyW > 1e-3) _blend.addScaledVector(_tmp.set(side * 0.78, 1.42, clamp(0.12 + _lv.z * 0.01, -0.3, 0.4)), flyW);  // out for balance
+    if (W.dive > 1e-3) _blend.addScaledVector(_tmp.set(side * 0.2, 1.0, 0.14), W.dive);              // pinned back along the body
+    _blend.divideScalar(gaitW + flyW + W.dive || 1);
+    _blend.lerp(_tmp.set(side * 0.2, HIP_Y - 0.05, -0.42), anim.roll);                              // hugging the knees
+    armZ[side] = _blend.z;
+    const rw = anim.rope[rope.side] += ((rope.state !== 'idle' ? 1 : 0) - anim.rope[rope.side]) * (1 - Math.exp(-(rope.state !== 'idle' ? 18 : 7) * dt));
+    const ropeTgt = anim.ropeTgt[rope.side];
+    if (rope.state !== 'idle') {
+      arm.root.getWorldPosition(_sh);
+      _wt.subVectors(rope.state === 'attached' ? swingCenter(rope) : rope.tip, _sh).normalize().multiplyScalar((arm.L1 + arm.L2) * 0.97).add(_sh);
+      ropeTgt.copy(model.worldToLocal(_wt));                // remembered, so the arm eases down from here after letting go
+    }
+    if (rw > 1e-3) {
+      // turn the arm around the shoulder (direction and reach blended separately): sliding the hand target
+      // in a straight line from "up along the rope" to "down by the hip" would pass through the shoulder
+      // and flip the elbow
+      model.worldToLocal(arm.root.getWorldPosition(_sh));
+      const d0 = _blend.sub(_sh).length(), d1 = _wt.subVectors(ropeTgt, _sh).length();
+      _blend.divideScalar(d0 || 1); _wt.divideScalar(d1 || 1);
+      _blend.applyQuaternion(_q.setFromUnitVectors(_blend, _wt).slerp(_qId, 1 - rw)).multiplyScalar(d0 + (d1 - d0) * rw).add(_sh);
+    }
+    arm.cur.lerp(_blend, 1 - Math.exp(-30 * dt));
     _pole.set(side * 0.4, -0.4, 1).transformDirection(model.matrixWorld);  // elbows bend back and out
     solveIK(arm, model.localToWorld(_wt.copy(arm.cur)), _pole);
   }
 
-  // head turns toward where the camera looks (within neck limits)
+  // --- spine: posture per motion, shoulders counter-twist against the hips when running, breathing at rest ---
+  const lean = W.ground * (0.04 + 0.18 * run * moveF) + W.wall * 0.15 - W.swing * 0.08 + anim.roll * 0.7 + anim.dip * 0.8;
+  spine.rotation.x = -lean + 0.012 * Math.sin(anim.t * 1.8) * W.ground * (1 - moveF);
+  spine.rotation.y = 0.25 * Math.tanh((0.5 * ((armZ[-1] || 0) - (armZ[1] || 0)) * run * gaitW) / 0.25);
+  // head: steady (undoes the spine motion) and turns toward where the camera looks
   const bodyYaw = Math.atan2(-player.fwd.x, -player.fwd.z);
-  head.rotation.set(clamp(cam.pitch, -0.5, 0.5) * 0.6, clamp(wrapAngle(cam.yaw - bodyYaw), -0.9, 0.9) * (player.grounded ? 1 : 0.5), 0);
+  head.rotation.set(clamp(cam.pitch, -0.5, 0.5) * 0.6 + lean * 0.7,
+                    clamp(wrapAngle(cam.yaw - bodyYaw), -0.9, 0.9) * (0.5 + 0.5 * W.ground) - spine.rotation.y, 0);
   head.visible = cam.mode !== 'first';
   character.updateMatrixWorld(true);
 }
+
+// Ankle target (body space) for one leg at gait phase u (0..1): planted for the first `duty` of the
+// cycle (sliding from front to back under the moving body), then lifted and swung forward.
+// The swing is a Hermite curve that leaves and lands with the planted foot's speed (no jolt at lift-off
+// or touch-down): it naturally trails a bit behind first and reaches a bit forward before landing.
+function gaitFoot(u, A, duty, lift, run, side, groundY) {
+  let y = 0, z;
+  if (u < duty) z = -A + 2 * A * (u / duty);
+  else {
+    const s = (u - duty) / (1 - duty), s2 = s * s, s3 = s2 * s, m = (2 * A * (1 - duty)) / duty;
+    z = (2 * s3 - 3 * s2 + 1) * A + (s3 - 2 * s2 + s) * m + (-2 * s3 + 3 * s2) * -A + (s3 - s2) * m;
+    y = lift * 16 * s2 * (1 - s) * (1 - s)                          // lift, flat at both ends
+      + run * 0.22 * 28.9 * s2 * (1 - s) ** 3;                      // heel kick early in the swing when running
+  }
+  return _gf.set(side * 0.11, ANKLE_Y + groundY + y, z);
+}
+const MODES = ['ground', 'air', 'swing', 'wall', 'dive'];
+const anim = {
+  w: { ground: 1, air: 0, swing: 0, wall: 0, dive: 0 }, roll: 0, rope: { L: 0, R: 0 },
+  ropeTgt: { L: new THREE.Vector3(-0.29, 0.92, 0), R: new THREE.Vector3(0.29, 0.92, 0) },
+  phase: 0, run: 0, dip: 0, dipV: 0, prevGrounded: true, prevVy: 0, t: 0,
+  qBase: new THREE.Quaternion(), acc: new THREE.Vector3(), prevV: new THREE.Vector3(),
+};
+const _blend = new THREE.Vector3(), _tmp = new THREE.Vector3(), _gf = new THREE.Vector3(), _qId = new THREE.Quaternion();
 const attachedAny = () => ropes.L.state === 'attached' || ropes.R.state === 'attached';
 
 function cameraBlocked(x, y, z) {
@@ -1266,7 +1320,7 @@ function updateCamera(dt) {
   // 3rd person: camera rolls slightly with the body's sideways tilt so the swing's pull is felt
   let rollTarget = 0;
   if (cam.mode === 'third') {
-    _up.set(0, 1, 0).applyQuaternion(character.quaternion);
+    _up.set(0, 1, 0).applyQuaternion(anim.qBase);
     rollTarget = -Math.asin(clamp(_up.x * Math.cos(cam.yaw) - _up.z * Math.sin(cam.yaw), -1, 1)) * 0.3;
   }
   cam.roll = (cam.roll || 0) + (rollTarget - (cam.roll || 0)) * Math.min(1, 4 * dt);
@@ -1347,7 +1401,7 @@ function updateHUD(dt) {
     `왼손 줄 <b>${ROPE_LABEL[ropes.L.state]}</b> · 오른손 줄 <b>${ROPE_LABEL[ropes.R.state]}</b>` +
     ` · 장력 <b>${(state.tensionG || 0).toFixed(1)}</b> G${(ropes.L.reeling || ropes.R.reeling) && (keys.ShiftLeft || keys.ShiftRight) ? ' · <b>감는 중</b>' : ''}` +
     (player.wall.mode ? ` · <b>${player.wall.mode === 'run' ? '벽 달리기' : '벽 붙기'}</b>` : '') +
-    (player.airMode ? ` · <b>${player.airMode === 'glide' ? '활공' : '다이브'}</b>` : '') +
+    (player.airMode ? ' · <b>다이브</b>' : '') +
     (state.fallback ? `<br><span style="color:#ffcf7a">마우스 고정 없음 모드 · 마우스를 화면 끝으로 밀거나 방향키로 시야 회전</span>` : '');
   drawMinimap();
 }
@@ -1574,7 +1628,7 @@ document.getElementById('loading').remove();
 requestAnimationFrame(frame);
 
 // debug/test hooks
-window.__game = { player, cam, ropes, state, keys, fireRope, releaseRope, jump, yank, resetPlayer, buildings, S, estimated, tick, character, score, coins };
+window.__game = { player, cam, ropes, state, keys, fireRope, releaseRope, jump, yank, resetPlayer, buildings, S, estimated, tick, character, score, coins, anim };
 console.log(`buildings: ${buildings.length} (estimated heights: ${estimated}), roads: ${DATA.roads.length}, snapshot: ${DATA.snapshot}`);
 </script>
 </body>
