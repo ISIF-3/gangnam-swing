@@ -228,14 +228,15 @@ DATA.buildings.forEach(([hRaw, arr], i) => {
 const CELL = 40;
 const grid = new Map();
 const cellKey = (cx, cz) => (cx + 1000) * 4000 + (cz + 1000);
-buildings.forEach((b, idx) => {
+function gridAdd(b, idx) {
   for (let cx = Math.floor(b.minX / CELL); cx <= Math.floor(b.maxX / CELL); cx++)
     for (let cz = Math.floor(b.minZ / CELL); cz <= Math.floor(b.maxZ / CELL); cz++) {
       const k = cellKey(cx, cz);
       let list = grid.get(k); if (!list) grid.set(k, list = []);
       list.push(idx);
     }
-});
+}
+buildings.forEach(gridAdd);
 const _qSet = new Set();
 function queryBuildings(minX, maxX, minZ, maxZ) {
   _qSet.clear();
@@ -277,6 +278,71 @@ function closestOnPoly(b, x, z) {
   }
   _cp.d = best;
   return _cp;
+}
+
+// ----- street furniture: lamps and trees along the roads -----
+// Placed from the road data with a fixed seed. Lamp poles and tree trunks are added as tiny solid
+// "buildings" (prop: true), so they block movement and ropes can catch on them like on any wall.
+const LAMP_H = 8, TRUNK_H = 2.6;
+const lamps = [], trees = [];
+function addProp(x, z, half, h) {
+  const b = { pts: [x - half, z - half, x + half, z - half, x + half, z + half, x - half, z + half], n: 4, h, area: (2 * half) ** 2,
+              minX: x - half, maxX: x + half, minZ: z - half, maxZ: z + half, color: [0.35, 0.36, 0.38], prop: true };
+  gridAdd(b, buildings.push(b) - 1);
+}
+{
+  const rnd = mulberry32(4242);
+  // road segments in a coarse grid, to keep props off the carriageway of crossing roads
+  const segs = [], sgrid = new Map();
+  for (const [w, arr] of DATA.roads) for (let i = 0; i + 3 < arr.length; i += 2) {
+    const s = { x0: arr[i], z0: arr[i + 1], x1: arr[i + 2], z1: arr[i + 3], hw: w / 2 }, k = segs.push(s) - 1;
+    for (let cx = Math.floor((Math.min(s.x0, s.x1) - s.hw) / CELL); cx <= Math.floor((Math.max(s.x0, s.x1) + s.hw) / CELL); cx++)
+      for (let cz = Math.floor((Math.min(s.z0, s.z1) - s.hw) / CELL); cz <= Math.floor((Math.max(s.z0, s.z1) + s.hw) / CELL); cz++) {
+        const key = cellKey(cx, cz); if (!sgrid.has(key)) sgrid.set(key, []); sgrid.get(key).push(k);
+      }
+  }
+  const onRoad = (x, z) => (sgrid.get(cellKey(Math.floor(x / CELL), Math.floor(z / CELL))) || []).some(k => {
+    const s = segs[k], ex = s.x1 - s.x0, ez = s.z1 - s.z0, L2 = ex * ex + ez * ez || 1;
+    const t = Math.max(0, Math.min(1, ((x - s.x0) * ex + (z - s.z0) * ez) / L2));
+    return Math.hypot(x - s.x0 - ex * t, z - s.z0 - ez * t) < s.hw + 0.8;
+  });
+  const placed = new Map(), pkey = (x, z) => Math.floor(x / 8) * 10007 + Math.floor(z / 8);
+  const crowded = (x, z) => {
+    for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++)
+      for (const [px, pz] of placed.get(pkey(x + dx * 8, z + dz * 8)) || []) if (Math.hypot(px - x, pz - z) < 7) return true;
+    return false;
+  };
+  const freeSpot = (x, z) => {
+    if (crowded(x, z) || onRoad(x, z)) return false;
+    for (const i of queryBuildings(x - 1.5, x + 1.5, z - 1.5, z + 1.5)) {
+      const b = buildings[i];
+      if (pointInPoly(b, x, z) || closestOnPoly(b, x, z).d < 1.2) return false;
+    }
+    return true;
+  };
+  const STEP = 14;
+  for (const [w, arr] of DATA.roads) {
+    if (w < 5) continue;                                         // footpaths and tiny alleys get none
+    const sides = w >= 9 ? [-1, 1] : [1];
+    let along = rnd() * STEP, count = 0;
+    for (let i = 0; i + 3 < arr.length; i += 2) {
+      const x0 = arr[i], z0 = arr[i + 1], dx = arr[i + 2] - x0, dz = arr[i + 3] - z0, L = Math.hypot(dx, dz);
+      if (L < 0.01) continue;
+      const ux = dx / L, uz = dz / L;
+      for (; along < L; along += STEP, count++) {
+        const tree = count % 2 === 1;
+        if (tree && w < 7) continue;
+        for (const side of sides) {
+          const off = w / 2 + 1.3, x = x0 + ux * along - uz * off * side, z = z0 + uz * along + ux * off * side;
+          if (!freeSpot(x, z)) continue;
+          const k = pkey(x, z); if (!placed.has(k)) placed.set(k, []); placed.get(k).push([x, z]);
+          if (tree) { trees.push({ x, z, s: 0.8 + rnd() * 0.45, yaw: rnd() * 6.283 }); addProp(x, z, 0.16, TRUNK_H); }
+          else { lamps.push({ x, z, yaw: Math.atan2(-uz * side, ux * side) }); addProp(x, z, 0.13, LAMP_H); }
+        }
+      }
+      along -= L;
+    }
+  }
 }
 
 // Ray vs extruded building polygons. Returns {t, point, normal} or null. Ground hits return null.
@@ -337,6 +403,7 @@ function buildCityMeshes() {
   const wP = [], wN = [], wU = [], wC = [];
   const rP = [], rN = [], rC = [];
   for (const b of buildings) {
+    if (b.prop) continue;
     const p = b.pts, n = b.n, h = b.h, sgn = b.area > 0 ? 1 : -1;
     const [cr, cg, cb] = b.color;
     let acc = 0;
@@ -407,8 +474,27 @@ function buildGroundAndRoads() {
   roads.receiveShadow = true; scene.add(roads);
 }
 
+function buildStreetProps() {
+  const metal = new THREE.MeshLambertMaterial({ color: 0x5a6068 });
+  const inst = (geo, mat, list, place) => {
+    const m = new THREE.InstancedMesh(geo, mat, Math.max(1, list.length)), mtx = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+    list.forEach((it, i) => { const sc = place(it); m.setMatrixAt(i, mtx.compose(new THREE.Vector3(it.x, 0, it.z), q.setFromAxisAngle(UP_AXIS, it.yaw), s.setScalar(sc))); });
+    m.count = list.length; m.castShadow = true; scene.add(m);
+  };
+  // lamp: tapered pole, arm reaching over the road (local -Z), glowing head
+  inst(new THREE.CylinderGeometry(0.07, 0.12, LAMP_H, 8).translate(0, LAMP_H / 2, 0), metal, lamps, () => 1);
+  inst(new THREE.BoxGeometry(0.07, 0.07, 1.9).translate(0, LAMP_H - 0.12, -0.9), metal, lamps, () => 1);
+  inst(new THREE.BoxGeometry(0.3, 0.1, 0.55).translate(0, LAMP_H - 0.22, -1.75), new THREE.MeshBasicMaterial({ color: 0xfff1c4 }), lamps, () => 1);
+  // tree: trunk + chunky crown
+  inst(new THREE.CylinderGeometry(0.11, 0.16, TRUNK_H + 0.8, 7).translate(0, (TRUNK_H + 0.8) / 2, 0), new THREE.MeshLambertMaterial({ color: 0x6b4f36 }), trees, t => t.s);
+  inst(new THREE.IcosahedronGeometry(1.7, 1).scale(1, 1.15, 1).translate(0, TRUNK_H + 1.4, 0),
+       new THREE.MeshLambertMaterial({ color: 0x5c8c46, flatShading: true }), trees, t => t.s);
+}
+const UP_AXIS = new THREE.Vector3(0, 1, 0);
+
 buildGroundAndRoads();
 buildCityMeshes();
+buildStreetProps();
 
 // ====================================================================
 // Character (simple original humanoid, faces -Z, origin at feet)
@@ -430,39 +516,63 @@ const darkMat = new THREE.MeshLambertMaterial({ color: 0x2b3442 });
 function joint(parent, x, y, z) { const g = new THREE.Group(); g.position.set(x, y, z); parent.add(g); return g; }
 function part(geo, mat, parent, x, y, z) { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); parent.add(m); return m; }
 const HIP_Y = 0.95, ANKLE_Y = 0.08;
+// tapered limb / torso piece: cylinder from radius r0 (top) to r1 (bottom), optionally flattened front-to-back
+function taper(r0, r1, len, mat, parent, y, depth = 1) {
+  const m = part(new THREE.CylinderGeometry(r0, r1, len, 14), mat, parent, 0, y, 0);
+  m.scale.z = depth; return m;
+}
+const ball = (r, mat, parent, x, y, z) => part(new THREE.SphereGeometry(r, 14, 10), mat, parent, x, y, z);
+
 const pelvis = joint(model, 0, HIP_Y, 0);
-part(new THREE.BoxGeometry(0.34, 0.16, 0.2), darkMat, pelvis, 0, 0.02, 0);
+taper(0.15, 0.17, 0.18, darkMat, pelvis, 0.0, 0.68);                       // hips
 const spine = joint(pelvis, 0, 0.08, 0);
-part(new THREE.BoxGeometry(0.31, 0.22, 0.19), suitMat, spine, 0, 0.11, 0);
-part(new THREE.BoxGeometry(0.35, 0.05, 0.21), accentMat, spine, 0, 0, 0);
+taper(0.145, 0.15, 0.24, suitMat, spine, 0.11, 0.7);                       // waist
+taper(0.16, 0.16, 0.045, accentMat, spine, 0.0, 0.72);                     // belt
+part(new THREE.BoxGeometry(0.06, 0.04, 0.02), accentMat, spine, 0, 0, -0.115);   // buckle
 const chest = joint(spine, 0, 0.22, 0);
-part(new THREE.BoxGeometry(0.44, 0.3, 0.25), suitMat, chest, 0, 0.13, 0);
-part(new THREE.BoxGeometry(0.14, 0.14, 0.02), accentMat, chest, 0, 0.15, -0.13).rotation.z = Math.PI / 4;
+taper(0.215, 0.155, 0.32, suitMat, chest, 0.14, 0.62);                     // ribcage, wide at the shoulders
+ball(0.09, suitMat, chest, -0.08, 0.2, -0.065).scale.set(1, 0.7, 0.5);    // chest muscles
+ball(0.09, suitMat, chest, 0.08, 0.2, -0.065).scale.set(1, 0.7, 0.5);
+part(new THREE.BoxGeometry(0.11, 0.11, 0.02), accentMat, chest, 0, 0.12, -0.128).rotation.z = Math.PI / 4;  // emblem
+part(new THREE.BoxGeometry(0.18, 0.22, 0.07), darkMat, chest, 0, 0.16, 0.13);    // small back pack
+taper(0.07, 0.2, 0.08, suitMat, chest, 0.29, 0.55);                        // trapezius slope to the shoulders
 const neck = joint(chest, 0, 0.3, 0);
-part(new THREE.CylinderGeometry(0.05, 0.06, 0.1, 10), suitMat, neck, 0, 0.04, 0);
+taper(0.05, 0.06, 0.12, suitMat, neck, 0.04);
 const head = joint(neck, 0, 0.14, 0);
-part(new THREE.SphereGeometry(0.12, 20, 14), suitMat, head, 0, 0, 0).scale.set(0.92, 1.08, 1);
-part(new THREE.BoxGeometry(0.19, 0.045, 0.04), visorMat, head, 0, 0.015, -0.105);
+ball(0.115, suitMat, head, 0, 0.01, 0).scale.set(0.9, 1.05, 1.02);        // helmet / skull
+ball(0.085, suitMat, head, 0, -0.06, -0.03).scale.set(0.85, 0.75, 0.9);   // jaw
+part(new THREE.BoxGeometry(0.17, 0.05, 0.05), visorMat, head, 0, 0.02, -0.095).rotation.x = -0.1;   // eye visor
+part(new THREE.BoxGeometry(0.02, 0.06, 0.03), darkMat, head, 0, -0.025, -0.11);   // nose ridge
 
 function makeArm(side) {
   const root = joint(chest, side * 0.25, 0.25, 0);
-  part(new THREE.SphereGeometry(0.07, 10, 8), suitMat, root, 0, 0, 0);
-  part(new THREE.CapsuleGeometry(0.055, 0.2, 4, 10), suitMat, root, 0, -0.15, 0);
+  ball(0.075, suitMat, root, 0, 0, 0);                                     // shoulder
+  taper(0.062, 0.05, 0.3, suitMat, root, -0.15);                           // upper arm
+  part(new THREE.BoxGeometry(0.012, 0.22, 0.03), accentMat, root, side * 0.057, -0.15, 0);   // side stripe
   const mid = joint(root, 0, -0.3, 0);
-  part(new THREE.CapsuleGeometry(0.048, 0.19, 4, 10), suitMat, mid, 0, -0.135, 0);
-  const end = joint(mid, 0, -0.27, 0);                     // wrist: the rope fires from here
-  part(new THREE.CylinderGeometry(0.058, 0.058, 0.06, 10), accentMat, end, 0, 0.03, 0);
-  part(new THREE.BoxGeometry(0.06, 0.1, 0.035), darkMat, end, 0, -0.06, 0);
+  ball(0.052, darkMat, mid, 0, 0, 0.01);                                   // elbow pad
+  taper(0.05, 0.04, 0.27, suitMat, mid, -0.135);                           // forearm
+  const end = joint(mid, 0, -0.27, 0);                                     // wrist: the rope fires from here
+  taper(0.052, 0.052, 0.06, accentMat, end, 0.035);                        // rope launcher band
+  // glove (bone frame: -Y along the arm, +Z = back, palm faces the body)
+  part(new THREE.BoxGeometry(0.03, 0.085, 0.08), darkMat, end, 0, -0.05, 0);                    // palm
+  part(new THREE.BoxGeometry(0.026, 0.07, 0.074), darkMat, end, -side * 0.008, -0.125, 0).rotation.z = -side * 0.25;  // fingers, curled in
+  part(new THREE.BoxGeometry(0.024, 0.05, 0.024), darkMat, end, -side * 0.018, -0.05, -0.048).rotation.x = 0.5;       // thumb
   return { root, mid, end, L1: 0.3, L2: 0.27, cur: new THREE.Vector3(side * 0.29, 0.92, 0) };
 }
 function makeLeg(side) {
   const root = joint(pelvis, side * 0.1, -0.02, 0);
-  part(new THREE.CapsuleGeometry(0.075, 0.28, 4, 10), suitMat, root, 0, -0.215, 0);
+  taper(0.088, 0.064, 0.43, suitMat, root, -0.215);                        // thigh
+  part(new THREE.BoxGeometry(0.014, 0.32, 0.035), accentMat, root, side * 0.078, -0.2, 0);   // side stripe
   const mid = joint(root, 0, -0.43, 0);
-  part(new THREE.CapsuleGeometry(0.062, 0.3, 4, 10), suitMat, mid, 0, -0.21, 0);
+  ball(0.064, darkMat, mid, 0, 0, -0.012).scale.set(1, 1, 0.9);            // knee pad
+  taper(0.062, 0.044, 0.42, suitMat, mid, -0.21);                          // shin
+  ball(0.055, suitMat, mid, 0, -0.14, 0.022).scale.set(0.9, 1.6, 0.8);     // calf
   const end = joint(mid, 0, -0.42, 0);
-  part(new THREE.BoxGeometry(0.1, 0.07, 0.24), darkMat, end, 0, -0.04, -0.05);
-  return { root, mid, end, L1: 0.43, L2: 0.42, cur: new THREE.Vector3(side * 0.1, ANKLE_Y, 0) };
+  part(new THREE.BoxGeometry(0.1, 0.075, 0.2), darkMat, end, 0, -0.04, -0.02);             // boot
+  ball(0.05, darkMat, end, 0, -0.045, -0.12).scale.set(1, 0.75, 1.2);      // toe
+  taper(0.05, 0.055, 0.06, darkMat, end, 0.01);                            // ankle cuff
+  return { root, mid, end, L1: 0.43, L2: 0.42, legs: true, cur: new THREE.Vector3(side * 0.1, ANKLE_Y, 0) };
 }
 const armL = makeArm(-1), armR = makeArm(1), legL = makeLeg(-1), legR = makeLeg(1);
 const wristL = armL.end, wristR = armR.end;
@@ -470,10 +580,19 @@ character.traverse(o => { if (o.isMesh) o.castShadow = true; });
 
 // Two-bone IK: bend `limb` so its end reaches `target` (world), bending toward `pole` (world direction).
 const DOWN = new THREE.Vector3(0, -1, 0);
-const _ikA = new THREE.Vector3(), _ikD = new THREE.Vector3(), _ikN = new THREE.Vector3(), _ikE = new THREE.Vector3(), _ikQ = new THREE.Quaternion();
-function aimBone(bone, dir) {
+const _ikA = new THREE.Vector3(), _ikD = new THREE.Vector3(), _ikN = new THREE.Vector3(), _ikE = new THREE.Vector3(), _ikQ = new THREE.Quaternion(),
+      _ikP = new THREE.Vector3(), _bX = new THREE.Vector3(), _bY = new THREE.Vector3(), _bZ = new THREE.Vector3(), _bM = new THREE.Matrix4(), _bQ = new THREE.Quaternion();
+// Point `bone` (which extends along its local -Y) along world `dir`, with its local +Z turned toward `pole`,
+// so the limb has a stable twist (hands and kneecaps face the right way).
+function aimBone(bone, dir, pole) {
+  _bY.copy(dir).normalize().negate();
+  _bZ.copy(pole).addScaledVector(_bY, -pole.dot(_bY));
+  if (_bZ.lengthSq() < 1e-8) _bZ.set(0, 0, 1).addScaledVector(_bY, -_bY.z);
+  _bZ.normalize();
+  _bX.crossVectors(_bY, _bZ);
+  _bQ.setFromRotationMatrix(_bM.makeBasis(_bX, _bY, _bZ));
   bone.parent.getWorldQuaternion(_ikQ).invert();
-  bone.quaternion.setFromUnitVectors(DOWN, dir.applyQuaternion(_ikQ).normalize());
+  bone.quaternion.copy(_ikQ).multiply(_bQ);
   bone.updateMatrixWorld(true);
 }
 function solveIK(limb, target, pole) {
@@ -489,8 +608,10 @@ function solveIK(limb, target, pole) {
   if (_ikN.lengthSq() < 1e-6) _ikN.set(0, 0, 1).addScaledVector(_ikD, -_ikD.z);
   _ikN.normalize();
   _ikE.copy(_ikD).multiplyScalar(Math.cos(A)).addScaledVector(_ikN, Math.sin(A)).multiplyScalar(L1).add(_ikA);   // elbow / knee
-  aimBone(root, _ikN.subVectors(_ikE, _ikA));
-  aimBone(mid, _ikN.copy(_ikA).addScaledVector(_ikD, dist).sub(_ikE));
+  // bone +Z faces back like the rest pose: arms bend backward (toward the pole), legs forward (away from +Z)
+  const back = limb.legs ? _ikP.copy(pole).negate() : pole;
+  aimBone(root, _ikN.subVectors(_ikE, _ikA), back);
+  aimBone(mid, _ikN.copy(_ikA).addScaledVector(_ikD, dist).sub(_ikE), back);
 }
 
 // ====================================================================
@@ -1113,7 +1234,7 @@ function cameraBlocked(x, y, z) {
   if (y < 0.25) return true;
   for (const i of queryBuildings(x - 0.3, x + 0.3, z - 0.3, z + 0.3)) {
     const b = buildings[i];
-    if (y < b.h + 0.3 && (pointInPoly(b, x, z) || closestOnPoly(b, x, z).d < 0.3)) return true;
+    if (!b.prop && y < b.h + 0.3 && (pointInPoly(b, x, z) || closestOnPoly(b, x, z).d < 0.3)) return true;
   }
   return false;
 }
@@ -1181,6 +1302,7 @@ const mmBase = document.createElement('canvas'); mmBase.width = mmBase.height = 
     g.stroke();
   }
   for (const b of buildings) {
+    if (b.prop) continue;
     const t = Math.min(1, b.h / 120);
     g.fillStyle = `rgb(${150 + t * 90 | 0},${160 + t * 70 | 0},${175 + t * 60 | 0})`;
     g.beginPath();
@@ -1303,7 +1425,7 @@ const coins = [];
     const x = rx(), z = rz();
     if (Math.hypot(x - SPAWN.x, z - SPAWN.z) < 80 || !free(x, 1.2, z, 1.0)) continue;
     let walls = 0;
-    for (const i of queryBuildings(x - 3.5, x + 3.5, z - 3.5, z + 3.5)) if (closestOnPoly(buildings[i], x, z).d < 3.5) walls++;
+    for (const i of queryBuildings(x - 3.5, x + 3.5, z - 3.5, z + 3.5)) if (!buildings[i].prop && closestOnPoly(buildings[i], x, z).d < 3.5) walls++;
     if (walls >= 2) { coins.push({ pos: new THREE.Vector3(x, 1.2, z), gem: true }); n++; }
   }
   coins.forEach((c, i) => { c.got = gotCoins.has(i); });
