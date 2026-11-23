@@ -43,6 +43,9 @@
   button.primary { background: var(--accent); color: #0b1620; border-color: transparent; font-weight: 700; flex: 1; }
   #msg { margin-top: 10px; font-size: 12px; color: #ffcf7a; min-height: 1em; }
   body.nocursor, body.nocursor canvas { cursor: none; }
+  #combo { position: fixed; left: 50%; bottom: 64px; transform: translateX(-50%); font-size: 22px; font-weight: 700; text-shadow: 0 2px 4px rgba(0,0,0,0.7); pointer-events: none; white-space: nowrap; }
+  #combo small { font-size: 14px; font-weight: 400; color: var(--muted); }
+  #pop { position: fixed; left: 50%; top: 30%; transform: translateX(-50%); font-size: 20px; font-weight: 700; color: #ffe27a; text-shadow: 0 2px 4px rgba(0,0,0,0.7); pointer-events: none; white-space: nowrap; transition: opacity 0.25s; }
   #loading { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 16px; background: #1a2430; }
 </style>
 <script type="importmap">
@@ -53,8 +56,10 @@
 <div id="loading">도시를 불러오는 중…</div>
 <div id="crosshair"></div>
 <div id="hud"></div>
+<div id="combo"></div>
+<div id="pop"></div>
 <canvas id="minimap" width="360" height="360"></canvas>
-<div id="keys">좌/우클릭 줄 · WASD 이동 · Space 점프/잡아채기 · Shift 달리기/줄 감기 · V 시점 · Esc 설정</div>
+<div id="keys">좌/우클릭 줄 · WASD 이동 · Space 점프/잡아채기/벽 점프 · Shift 달리기/줄 감기 · V 시점 · Esc 설정</div>
 <div id="attrib">지도 데이터 © OpenStreetMap contributors (ODbL)</div>
 
 <div id="overlay">
@@ -68,6 +73,7 @@
           <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>이동 / 공중 방향·균형</li>
           <li><kbd>Space</kbd>점프 · 매달린 중엔 잡아채기 (튕겨 날아가기)</li>
           <li><kbd>Shift</kbd>달리기 · 매달린 중엔 줄 감기</li>
+          <li>공중에서 벽에 닿은 채 이동 키 = 벽 달리기 · 벽에서 <kbd>Space</kbd> = 벽 점프</li>
           <li><kbd>좌클릭</kbd>왼손 줄 (누르고 있기 = 매달림)</li>
           <li><kbd>우클릭</kbd>오른손 줄</li>
           <li><kbd>V</kbd>3인칭 / 1인칭 전환</li>
@@ -77,6 +83,8 @@
         </ul>
       </div>
       <div>
+        <h2>게임</h2>
+        <p class="sub" style="margin-bottom:12px">도시 곳곳의 <b style="color:#ffc83d">코인</b>과 숨겨진 <b style="color:#6ff7ff">보석</b>을 모으세요. 땅에 닿지 않고 스윙·벽 달리기·아슬아슬 비행을 이어 가면 콤보 점수가 쌓이고, 땅에 내려서면 점수로 확정돼요. 벽에 세게 부딪히면 콤보가 날아가요.</p>
         <h2>설정</h2>
         <div id="sliders"></div>
       </div>
@@ -84,6 +92,7 @@
     <div class="btns">
       <button class="primary" id="play">클릭해서 시작</button>
       <button id="reset">설정 초기화</button>
+      <button id="resetCoins">코인 기록 초기화</button>
     </div>
     <div id="msg"></div>
   </div>
@@ -305,7 +314,7 @@ function raycastCity(o, d, maxT) {
     }
   }
   if (!hit || hit === 'ground') return null;
-  return { t: best, point: new THREE.Vector3(o.x + d.x * best, o.y + d.y * best, o.z + d.z * best), normal: new THREE.Vector3(nx, ny, nz) };
+  return { t: best, point: new THREE.Vector3(o.x + d.x * best, o.y + d.y * best, o.z + d.z * best), normal: new THREE.Vector3(nx, ny, nz), b: hit };
 }
 
 // ----- building meshes -----
@@ -416,45 +425,84 @@ scene.add(character);
 const model = new THREE.Group();
 model.position.y = -PIVOT_Y;
 character.add(model);
-const torso = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.6, 0.24), suitMat);
-torso.position.y = 1.25; model.add(torso);
-const belt = new THREE.Mesh(new THREE.BoxGeometry(0.43, 0.07, 0.25), accentMat);
-belt.position.y = 0.98; model.add(belt);
-const chestMark = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.16, 0.02), accentMat);
-chestMark.position.set(0, 1.34, -0.125); chestMark.rotation.z = Math.PI / 4; model.add(chestMark);
-const head = new THREE.Group(); head.position.y = 1.68; model.add(head);
-head.add(new THREE.Mesh(new THREE.SphereGeometry(0.13, 20, 14), suitMat));
-const visor = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.045, 0.04), visorMat);
-visor.position.set(0, 0.015, -0.115); head.add(visor);
+// Jointed body: pelvis -> spine -> chest -> neck -> head, two-bone arms and legs posed by IK each frame.
+const darkMat = new THREE.MeshLambertMaterial({ color: 0x2b3442 });
+function joint(parent, x, y, z) { const g = new THREE.Group(); g.position.set(x, y, z); parent.add(g); return g; }
+function part(geo, mat, parent, x, y, z) { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); parent.add(m); return m; }
+const HIP_Y = 0.95, ANKLE_Y = 0.08;
+const pelvis = joint(model, 0, HIP_Y, 0);
+part(new THREE.BoxGeometry(0.34, 0.16, 0.2), darkMat, pelvis, 0, 0.02, 0);
+const spine = joint(pelvis, 0, 0.08, 0);
+part(new THREE.BoxGeometry(0.31, 0.22, 0.19), suitMat, spine, 0, 0.11, 0);
+part(new THREE.BoxGeometry(0.35, 0.05, 0.21), accentMat, spine, 0, 0, 0);
+const chest = joint(spine, 0, 0.22, 0);
+part(new THREE.BoxGeometry(0.44, 0.3, 0.25), suitMat, chest, 0, 0.13, 0);
+part(new THREE.BoxGeometry(0.14, 0.14, 0.02), accentMat, chest, 0, 0.15, -0.13).rotation.z = Math.PI / 4;
+const neck = joint(chest, 0, 0.3, 0);
+part(new THREE.CylinderGeometry(0.05, 0.06, 0.1, 10), suitMat, neck, 0, 0.04, 0);
+const head = joint(neck, 0, 0.14, 0);
+part(new THREE.SphereGeometry(0.12, 20, 14), suitMat, head, 0, 0, 0).scale.set(0.92, 1.08, 1);
+part(new THREE.BoxGeometry(0.19, 0.045, 0.04), visorMat, head, 0, 0.015, -0.105);
 
-function makeLimb(radius, length, mat, x, y) {
-  const pivot = new THREE.Group(); pivot.position.set(x, y, 0);
-  const m = new THREE.Mesh(new THREE.CapsuleGeometry(radius, length, 4, 10), mat);
-  m.position.y = -(length / 2 + radius * 0.5); pivot.add(m);
-  model.add(pivot);
-  return pivot;
+function makeArm(side) {
+  const root = joint(chest, side * 0.25, 0.25, 0);
+  part(new THREE.SphereGeometry(0.07, 10, 8), suitMat, root, 0, 0, 0);
+  part(new THREE.CapsuleGeometry(0.055, 0.2, 4, 10), suitMat, root, 0, -0.15, 0);
+  const mid = joint(root, 0, -0.3, 0);
+  part(new THREE.CapsuleGeometry(0.048, 0.19, 4, 10), suitMat, mid, 0, -0.135, 0);
+  const end = joint(mid, 0, -0.27, 0);                     // wrist: the rope fires from here
+  part(new THREE.CylinderGeometry(0.058, 0.058, 0.06, 10), accentMat, end, 0, 0.03, 0);
+  part(new THREE.BoxGeometry(0.06, 0.1, 0.035), darkMat, end, 0, -0.06, 0);
+  return { root, mid, end, L1: 0.3, L2: 0.27, cur: new THREE.Vector3(side * 0.29, 0.92, 0) };
 }
-const armL = makeLimb(0.055, 0.52, suitMat, -0.27, 1.5);
-const armR = makeLimb(0.055, 0.52, suitMat, 0.27, 1.5);
-const legL = makeLimb(0.075, 0.76, suitMat, -0.11, 0.95);
-const legR = makeLimb(0.075, 0.76, suitMat, 0.11, 0.95);
-function addWrist(arm) {
-  const w = new THREE.Object3D(); w.position.y = -0.62; arm.add(w);
-  const band = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.065, 0.07, 10), accentMat);
-  band.position.y = -0.56; arm.add(band);
-  return w;
+function makeLeg(side) {
+  const root = joint(pelvis, side * 0.1, -0.02, 0);
+  part(new THREE.CapsuleGeometry(0.075, 0.28, 4, 10), suitMat, root, 0, -0.215, 0);
+  const mid = joint(root, 0, -0.43, 0);
+  part(new THREE.CapsuleGeometry(0.062, 0.3, 4, 10), suitMat, mid, 0, -0.21, 0);
+  const end = joint(mid, 0, -0.42, 0);
+  part(new THREE.BoxGeometry(0.1, 0.07, 0.24), darkMat, end, 0, -0.04, -0.05);
+  return { root, mid, end, L1: 0.43, L2: 0.42, cur: new THREE.Vector3(side * 0.1, ANKLE_Y, 0) };
 }
-const wristL = addWrist(armL), wristR = addWrist(armR);
+const armL = makeArm(-1), armR = makeArm(1), legL = makeLeg(-1), legR = makeLeg(1);
+const wristL = armL.end, wristR = armR.end;
 character.traverse(o => { if (o.isMesh) o.castShadow = true; });
+
+// Two-bone IK: bend `limb` so its end reaches `target` (world), bending toward `pole` (world direction).
+const DOWN = new THREE.Vector3(0, -1, 0);
+const _ikA = new THREE.Vector3(), _ikD = new THREE.Vector3(), _ikN = new THREE.Vector3(), _ikE = new THREE.Vector3(), _ikQ = new THREE.Quaternion();
+function aimBone(bone, dir) {
+  bone.parent.getWorldQuaternion(_ikQ).invert();
+  bone.quaternion.setFromUnitVectors(DOWN, dir.applyQuaternion(_ikQ).normalize());
+  bone.updateMatrixWorld(true);
+}
+function solveIK(limb, target, pole) {
+  const { root, mid, L1, L2 } = limb;
+  root.getWorldPosition(_ikA);
+  _ikD.subVectors(target, _ikA);
+  let dist = _ikD.length();
+  if (dist < 1e-4) return;
+  _ikD.divideScalar(dist);
+  dist = Math.min(Math.max(dist, Math.abs(L1 - L2) + 0.05), (L1 + L2) * 0.999);
+  const A = Math.acos(Math.min(1, Math.max(-1, (L1 * L1 + dist * dist - L2 * L2) / (2 * L1 * dist))));
+  _ikN.copy(pole).addScaledVector(_ikD, -pole.dot(_ikD));
+  if (_ikN.lengthSq() < 1e-6) _ikN.set(0, 0, 1).addScaledVector(_ikD, -_ikD.z);
+  _ikN.normalize();
+  _ikE.copy(_ikD).multiplyScalar(Math.cos(A)).addScaledVector(_ikN, Math.sin(A)).multiplyScalar(L1).add(_ikA);   // elbow / knee
+  aimBone(root, _ikN.subVectors(_ikE, _ikA));
+  aimBone(mid, _ikN.copy(_ikA).addScaledVector(_ikD, dist).sub(_ikE));
+}
 
 // ====================================================================
 // Game state
 // ====================================================================
-const BODY_RADIUS = 0.38, STEP_UP = 0.4, ROPE_ATTACH_Y = 1.3, EYE_Y = 1.68;
-const player = { pos: new THREE.Vector3(), vel: new THREE.Vector3(), grounded: true, facing: 0, walkPhase: 0, fwd: new THREE.Vector3(0, 0, -1) };
+const BODY_RADIUS = 0.38, STEP_UP = 0.4, ROPE_ATTACH_Y = 1.3;
+const player = { pos: new THREE.Vector3(), vel: new THREE.Vector3(), grounded: true, facing: 0, walkPhase: 0, fwd: new THREE.Vector3(0, 0, -1),
+                 fx: { roll: 0, crouch: 0 },                                   // landing animations (seconds left)
+                 wall: { touch: false, nx: 0, nz: 0, since: 9, time: 0, mode: '' } }; // wall contact for wall run / wall jump
 const cam = { yaw: 0, pitch: -0.12, mode: 'third', dist: 5.5, actualDist: 5.5 };
 const keys = {};
-const state = { paused: true, fallback: false, aimHit: null, aimInRange: false, mouseX: 0, mouseY: 0, mouseIn: false, tensionG: 0, yankFlash: 0 };
+const state = { paused: true, fallback: false, aimHit: null, aimInRange: false, mouseX: 0, mouseY: 0, mouseIn: false, tensionG: 0, shake: 0 };
 
 function findSpawn() {
   for (let r = 0; r < 200; r += 4) {
@@ -481,7 +529,9 @@ function resetPlayer() {
   prevPos.copy(SPAWN); renderPos.copy(SPAWN); physAcc = 0;
   cam.yaw = 0; cam.pitch = -0.12; player.facing = 0;
   player.fwd.set(0, 0, -1); character.quaternion.identity();
+  player.fx.roll = player.fx.crouch = 0; Object.assign(player.wall, { touch: false, since: 9, time: 0, mode: '' });
   for (const r of Object.values(ropes)) { r.state = 'idle'; r.held = false; r.tension = r.tensionRaw = 0; }
+  endCombo(false);
 }
 
 // ====================================================================
@@ -490,13 +540,18 @@ function resetPlayer() {
 const ropeGeo = new THREE.CylinderGeometry(0.028, 0.028, 1, 6, 1, true);
 const ropeMat = new THREE.MeshBasicMaterial({ color: 0xf4f8fa });
 const anchorGeo = new THREE.SphereGeometry(0.18, 10, 8);
+// all rope pieces of both ropes are drawn as instances of one thin cylinder
+const ROPE_SAG_SEGS = 12, MAX_PIVOTS = 4;
+const ropeSegs = new THREE.InstancedMesh(ropeGeo, ropeMat, 2 * (ROPE_SAG_SEGS + MAX_PIVOTS));
+ropeSegs.frustumCulled = false; ropeSegs.count = 0; scene.add(ropeSegs);
 function makeRope(side, wrist) {
-  const mesh = new THREE.Mesh(ropeGeo, ropeMat); mesh.visible = false; scene.add(mesh);
   const dot = new THREE.Mesh(anchorGeo, ropeMat); dot.visible = false; scene.add(dot);
-  return { side, wrist, mesh, dot, state: 'idle', held: false, hit: false, anchor: new THREE.Vector3(), launch: new THREE.Vector3(), dir: new THREE.Vector3(), tip: new THREE.Vector3(), tipDist: 0, targetDist: 0, len: 0, targetLen: 0,
-           reeling: 0, tensionRaw: 0, tension: 0, tdir: new THREE.Vector3() };
+  return { side, wrist, dot, state: 'idle', held: false, hit: false, anchor: new THREE.Vector3(), launch: new THREE.Vector3(), dir: new THREE.Vector3(), tip: new THREE.Vector3(), tipDist: 0, targetDist: 0, len: 0, targetLen: 0,
+           reeling: 0, tensionRaw: 0, tension: 0, tdir: new THREE.Vector3(),
+           pivots: [], wrapCool: 0 };   // pivots: building corners the rope is wrapped around (last = current swing center)
 }
 const ropes = { L: makeRope('L', wristL), R: makeRope('R', wristR) };
+const swingCenter = r => r.pivots.length ? r.pivots[r.pivots.length - 1] : r.anchor;
 
 function camDir(out) {
   const cp = Math.cos(cam.pitch);
@@ -538,6 +593,7 @@ function applyReleaseBoost(r) {
   if (player.grounded || r.tension < 2 || v.y <= 0 || sp < 3 || S.releaseBoost <= 0) return;
   v.addScaledVector(v, (Math.min(6, sp * 0.12) * S.releaseBoost) / sp);
   v.y += 2.5 * S.releaseBoost;
+  addStyle(60, '타이밍 가속'); bumpMult(0.25);
 }
 
 // Space while hanging: snap the rope in hard and let go -> slingshot toward / past the anchor.
@@ -547,7 +603,7 @@ function yank() {
   const dir = new THREE.Vector3();
   _chest.copy(player.pos).y += ROPE_ATTACH_Y;
   for (const r of att) {
-    dir.subVectors(r.anchor, _chest).normalize();
+    dir.subVectors(swingCenter(r), _chest).normalize();
     const vr = player.vel.dot(dir);
     if (vr < 0) player.vel.addScaledVector(dir, -vr);      // cancel motion away from the anchor
     player.vel.addScaledVector(dir, S.yankPower / att.length);
@@ -555,7 +611,8 @@ function yank() {
   }
   player.vel.y += 3;
   if (player.grounded) { player.grounded = false; player.pos.y += 0.05; }
-  state.yankFlash = 0.25;
+  state.shake = Math.max(state.shake, 0.3);
+  if (!player.grounded) addStyle(40, '잡아채기');
   return true;
 }
 
@@ -573,6 +630,8 @@ function stepRopes(dt) {
             _chest.copy(player.pos).y += ROPE_ATTACH_Y;
             r.len = Math.max(1.5, _chest.distanceTo(r.anchor));
             r.targetLen = Math.max(1.5, r.len * (1 - S.ropePull));
+            r.pivots.length = 0; r.wrapCool = 0;
+            if (!player.grounded) { addStyle(25, ''); bumpMult(0.25); }
           } else r.state = 'retracting';
         }
       }
@@ -590,20 +649,82 @@ function updateRopes(dt) {
       if (d <= stepD) r.state = 'idle';
       else r.tip.lerp(_w, stepD / d);
     }
-    // visuals
-    if (r.state === 'idle') { r.mesh.visible = false; r.dot.visible = false; continue; }
-    const v = new THREE.Vector3().subVectors(r.tip, _w), L = v.length();
-    if (L < 0.01) { r.mesh.visible = false; } else {
-      r.mesh.visible = true;
-      r.mesh.position.copy(_w).addScaledVector(v, 0.5);
-      r.mesh.quaternion.setFromUnitVectors(UP, v.divideScalar(L));
-      // taut rope under high tension looks slightly thicker
-      const thick = r.state === 'attached' ? 1 + Math.min(1, r.tension / 45) * 0.7 : 1;
-      r.mesh.scale.set(thick, L, thick);
-    }
-    r.dot.visible = r.state === 'attached';
-    if (r.dot.visible) r.dot.position.copy(r.anchor);
   }
+  // visuals: wrist -> current swing center as a sagging curve, then straight pieces over wrapped corners
+  segCount = 0;
+  for (const r of Object.values(ropes)) {
+    r.dot.visible = r.state === 'attached';
+    if (r.state === 'idle') continue;
+    r.wrist.getWorldPosition(_w);
+    const end = r.state === 'attached' ? swingCenter(r) : r.tip, d = _w.distanceTo(end);
+    // slack -> sag depth of a parabola with the same arc length (arc ~ d + 8 s^2 / 3d)
+    let slack = d * (r.state === 'flying' ? 0.004 : 0.03);
+    if (r.state === 'attached') slack = Math.max(0, r.len - _sb.copy(renderPos).setY(renderPos.y + ROPE_ATTACH_Y).distanceTo(end));
+    const sag = Math.min(d * 0.5, Math.sqrt((3 * d * slack) / 8));
+    const thick = r.state === 'attached' ? 1 + Math.min(1, r.tension / 45) * 0.7 : 1;   // taut rope under load looks thicker
+    for (let i = 0; i < ROPE_SAG_SEGS; i++) {
+      const t0 = i / ROPE_SAG_SEGS, t1 = (i + 1) / ROPE_SAG_SEGS;
+      _sa.lerpVectors(_w, end, t0); _sa.y -= 4 * sag * t0 * (1 - t0);
+      _sb.lerpVectors(_w, end, t1); _sb.y -= 4 * sag * t1 * (1 - t1);
+      drawSeg(_sa, _sb, thick);
+    }
+    if (r.state === 'attached') {
+      for (let i = r.pivots.length - 1; i >= 0; i--) drawSeg(r.pivots[i], i ? r.pivots[i - 1] : r.anchor, thick);
+      r.dot.position.copy(r.anchor);
+    }
+  }
+  ropeSegs.count = segCount;
+  ropeSegs.instanceMatrix.needsUpdate = true;
+}
+const _sa = new THREE.Vector3(), _sb = new THREE.Vector3(), _sd = new THREE.Vector3(), _sc = new THREE.Vector3(), _sk = new THREE.Vector3(),
+      _sq = new THREE.Quaternion(), _sm = new THREE.Matrix4();
+let segCount = 0;
+function drawSeg(a, b, thick) {
+  _sd.subVectors(b, a);
+  const L = _sd.length();
+  if (L < 0.01) return;
+  _sq.setFromUnitVectors(UP, _sd.divideScalar(L));
+  ropeSegs.setMatrixAt(segCount++, _sm.compose(_sc.addVectors(a, b).multiplyScalar(0.5), _sq, _sk.set(thick, L, thick)));
+}
+
+// Rope wrap: if something blocks the line from the chest to the swing center, the rope catches on that
+// building's nearest corner (or roof edge), which becomes the new swing center with the remaining length.
+const _wd = new THREE.Vector3();
+function updateWrap(r, chestPos, dt) {
+  r.wrapCool -= dt;
+  if (r.wrapCool > 0) return;
+  const c = swingCenter(r);
+  if (r.pivots.length) {
+    const prev = r.pivots.length > 1 ? r.pivots[r.pivots.length - 2] : r.anchor;
+    if (lineClear(chestPos, prev)) { const back = c.distanceTo(prev); r.len += back; r.targetLen += back; r.pivots.pop(); r.wrapCool = 0.1; return; }
+  }
+  if (r.pivots.length >= MAX_PIVOTS) return;
+  _wd.subVectors(c, chestPos);
+  const d = _wd.length();
+  if (d < 2) return;
+  const hit = raycastCity(chestPos, _wd.divideScalar(d), d - 0.4);
+  if (!hit || hit.normal.y !== 0) return;
+  const b = hit.b, p = hit.point;
+  let best = Infinity, vx = 0, vz = 0;
+  for (let i = 0; i < b.n; i++) {
+    const dd = Math.hypot(b.pts[2 * i] - p.x, b.pts[2 * i + 1] - p.z);
+    if (dd < best) { best = dd; vx = b.pts[2 * i]; vz = b.pts[2 * i + 1]; }
+  }
+  const piv = new THREE.Vector3();
+  if (b.h - p.y < best) piv.set(p.x + hit.normal.x * 0.15, b.h + 0.15, p.z + hit.normal.z * 0.15);   // over the roof edge
+  else {                                                                                            // around a vertical corner
+    const ox = vx - (b.minX + b.maxX) / 2, oz = vz - (b.minZ + b.maxZ) / 2, ol = Math.hypot(ox, oz) || 1;
+    piv.set(vx + (ox / ol) * 0.2, p.y, vz + (oz / ol) * 0.2);
+  }
+  const used = piv.distanceTo(c);
+  if (used >= r.len - 1) return;
+  r.len -= used; r.targetLen = Math.max(1.5, r.targetLen - used);
+  r.pivots.push(piv); r.wrapCool = 0.1;
+}
+function lineClear(a, b) {
+  _wd.subVectors(b, a);
+  const d = _wd.length();
+  return d < 0.5 || !raycastCity(a, _wd.divideScalar(d), d - 0.3);
 }
 
 // ====================================================================
@@ -628,11 +749,32 @@ function physicsStep(dt) {
   const input = moveInput();
   const attached = ropes.L.state === 'attached' || ropes.R.state === 'attached';
   const shift = !!(keys.ShiftLeft || keys.ShiftRight);
+  const fx = player.fx, wall = player.wall;
+  fx.roll = Math.max(0, fx.roll - dt); fx.crouch = Math.max(0, fx.crouch - dt);
 
-  vel.y -= S.gravity * dt;
+  // Wall run / wall cling: airborne, touching a wall, pressing a move key that is not pointing away from it.
+  // Fast along the wall -> run along it with little gravity; slow -> slide down slowly. Limited time per contact.
+  wall.mode = '';
+  if (player.grounded || attached) wall.time = 0;
+  const wantWall = !player.grounded && !attached && wall.since < 0.05 && wall.time < WALL_TIME &&
+                   (input.x || input.z) && input.x * wall.nx + input.z * wall.nz < 0.3;
+  let gScale = 1;
+  if (wantWall) {
+    const vn = vel.x * wall.nx + vel.z * wall.nz, along = Math.hypot(vel.x - wall.nx * vn, vel.z - wall.nz * vn);
+    wall.mode = along > 7 ? 'run' : 'cling';
+    gScale = wall.mode === 'run' ? 0.25 : 1;
+    vel.x -= wall.nx * 4 * dt; vel.z -= wall.nz * 4 * dt;          // stay pressed against the wall
+    wall.time += dt;
+    if (wall.mode === 'run') addStyle(30 * dt, '');
+  }
+
+  vel.y -= S.gravity * gScale * dt;
+  if (wall.mode === 'cling') vel.y = Math.max(vel.y, -2.5);
+  if (wall.mode === 'run' && vel.y < -2) vel.y += (-2 - vel.y) * Math.min(1, 6 * dt);
   if (player.grounded) {
-    const speed = shift && !attached ? 15 : 7.5;
-    const k = 1 - Math.exp(-12 * dt);
+    // rolling keeps its momentum; a hard landing (crouch) slows you down
+    const speed = fx.crouch > 0 ? 1.5 : shift && !attached ? 15 : 7.5;
+    const k = fx.roll > 0 ? 1 - Math.exp(-0.8 * dt) : 1 - Math.exp(-12 * dt);
     vel.x += (input.x * speed - vel.x) * k;
     vel.z += (input.z * speed - vel.z) * k;
   } else {
@@ -643,7 +785,20 @@ function physicsStep(dt) {
   }
 
   const prevFeet = pos.y;
-  pos.addScaledVector(vel, dt);
+  // Continuous collision: at high speed one step can be longer than the body is wide, so first check
+  // the path for a wall and stop at it instead of jumping through thin buildings.
+  const stepLen = vel.length() * dt;
+  let moved = false;
+  if (stepLen > BODY_RADIUS * 0.5) {
+    _P.copy(pos).y += 0.9; _t.copy(vel).divideScalar(stepLen / dt);
+    const hit = raycastCity(_P, _t, stepLen + BODY_RADIUS);
+    if (hit && hit.normal.y === 0) {
+      pos.addScaledVector(_t, Math.max(0, hit.t - BODY_RADIUS));
+      hitWall(hit.normal.x, hit.normal.z);
+      moved = true;
+    }
+  }
+  if (!moved) pos.addScaledVector(vel, dt);
 
   // Rope shortening: automatic tension right after attaching, plus manual reel-in while Shift is held.
   // When the rope is taut, angular momentum about the anchor is conserved (r * v_t = const),
@@ -657,7 +812,7 @@ function physicsStep(dt) {
     if (rate <= 0 || r.len <= floor) continue;
     const newLen = Math.max(floor, r.len - rate * dt);
     _P.copy(pos).y += ROPE_ATTACH_Y;
-    _n.subVectors(_P, r.anchor);
+    _n.subVectors(_P, swingCenter(r));
     const dist = _n.length();
     if (dist > r.len - 0.2 && dist > 1e-3) {
       _n.divideScalar(dist);
@@ -680,7 +835,7 @@ function physicsStep(dt) {
     for (const r of Object.values(ropes)) {
       if (r.state !== 'attached') continue;
       _P.copy(pos).y += ROPE_ATTACH_Y;
-      _n.subVectors(_P, r.anchor);
+      _n.subVectors(_P, swingCenter(r));
       const dist = _n.length();
       if (dist <= r.len || dist < 1e-6) continue;
       _n.divideScalar(dist);
@@ -698,7 +853,7 @@ function physicsStep(dt) {
         }
       } else {
         const lim = e > 0.001 ? r.len + maxStretch : r.len;
-        pos.copy(r.anchor).addScaledVector(_n, lim); pos.y -= ROPE_ATTACH_Y;
+        pos.copy(swingCenter(r)).addScaledVector(_n, lim); pos.y -= ROPE_ATTACH_Y;
         const want = -(r.reeling || 0);
         const vr = vel.dot(_n); if (vr > want) vel.addScaledVector(_n, want - vr);
       }
@@ -712,10 +867,14 @@ function physicsStep(dt) {
     const b = buildings[i];
     if (b.h <= prevFeet + STEP_UP && b.h > support && pointInPoly(b, pos.x, pos.z)) support = b.h;
   }
-  if (pos.y <= support) { pos.y = support; if (vel.y < 0) vel.y = 0; player.grounded = true; }
-  else player.grounded = false;
+  if (pos.y <= support) {
+    if (!player.grounded) land(vel.y);
+    pos.y = support; if (vel.y < 0) vel.y = 0; player.grounded = true;
+  } else player.grounded = false;
 
   // walls
+  wall.touch = false;
+  let nearWall = Infinity;
   for (const i of cand) {
     const b = buildings[i];
     if (pos.y >= b.h - STEP_UP) continue;
@@ -724,11 +883,16 @@ function physicsStep(dt) {
     let nx, nz;
     if (inside) { nx = c.nx; nz = c.nz; }
     else if (c.d < BODY_RADIUS && c.d > 1e-6) { nx = (pos.x - c.x) / c.d; nz = (pos.z - c.z) / c.d; }
-    else continue;
+    else { nearWall = Math.min(nearWall, c.d); continue; }
     pos.x = c.x + nx * BODY_RADIUS; pos.z = c.z + nz * BODY_RADIUS;
-    const vn = vel.x * nx + vel.z * nz;
-    if (vn < 0) { vel.x -= nx * vn; vel.z -= nz * vn; }
+    hitWall(nx, nz);
   }
+  wall.since = wall.touch ? 0 : wall.since + dt;
+  // flying fast right past a wall without touching it
+  score.nearCool -= dt;
+  if (!player.grounded && nearWall < 1.6 && vel.length() > 22 && score.nearCool <= 0) { addStyle(40, '아슬아슬'); score.nearCool = 0.8; }
+
+  for (const r of Object.values(ropes)) if (r.state === 'attached') updateWrap(r, _P.copy(pos).setY(pos.y + ROPE_ATTACH_Y), dt);
 
   const LIM = 1000;
   pos.x = Math.max(-LIM, Math.min(LIM, pos.x)); pos.z = Math.max(-LIM, Math.min(LIM, pos.z));
@@ -741,7 +905,7 @@ function physicsStep(dt) {
     r.tensionRaw = 0;
     if (r.state !== 'attached') continue;
     _P.copy(pos).y += ROPE_ATTACH_Y;
-    _n.subVectors(_P, r.anchor);
+    _n.subVectors(_P, swingCenter(r));
     const dist = _n.length();
     if (dist < r.len - 0.05 || dist < 1e-3) continue;        // slack rope pulls nothing
     _n.divideScalar(dist);
@@ -753,15 +917,48 @@ function physicsStep(dt) {
   }
 }
 
+// Wall contact with outward normal (nx, nz). Gentle contact just stops the motion into the wall;
+// a hard hit bounces off a little, shakes the camera and (very hard) breaks the combo.
+function hitWall(nx, nz) {
+  const vel = player.vel, wall = player.wall;
+  wall.touch = true; wall.nx = nx; wall.nz = nz;
+  const vn = vel.x * nx + vel.z * nz;
+  if (vn >= 0) return;
+  const into = -vn;
+  if (into > 16 && !player.grounded) {
+    vel.x -= nx * vn * 1.3; vel.z -= nz * vn * 1.3;          // remove the inward speed + 30% bounce
+    vel.x *= 0.75; vel.z *= 0.75;
+    state.shake = Math.max(state.shake, Math.min(0.8, into / 45));
+    if (into > 24) endCombo(true);
+  } else { vel.x -= nx * vn; vel.z -= nz * vn; }
+}
+// Touching down with vertical speed vy (< 0): a fast fall rolls forward if moving, otherwise crouches.
+function land(vy) {
+  const v = player.vel, hs = Math.hypot(v.x, v.z), fx = player.fx;
+  if (vy > -14) return;
+  if (hs > 6) { fx.roll = ROLL_TIME; v.x *= 0.85; v.z *= 0.85; addStyle(50, '구르기 착지'); }
+  else fx.crouch = CROUCH_TIME;
+  state.shake = Math.max(state.shake, Math.min(0.6, -vy / 60));
+}
+const WALL_TIME = 1.6, ROLL_TIME = 0.55, CROUCH_TIME = 0.35;
+
 function jump() {
-  if (player.grounded) { player.vel.y = 9; player.grounded = false; player.pos.y += 0.02; }
+  const w = player.wall;
+  if (player.grounded) { player.vel.y = 9; player.grounded = false; player.pos.y += 0.02; player.fx.roll = 0; }
+  else if (w.since < 0.15 && w.time < WALL_TIME) {
+    // wall jump: kick off the wall, up and away. Each jump uses up wall time, so climbing by
+    // jumping is limited until you touch the ground or a rope again.
+    player.vel.x += w.nx * 9; player.vel.z += w.nz * 9; player.vel.y = Math.max(player.vel.y, 0) + 8.5;
+    w.time += 0.4; w.since = 9;
+    addStyle(40, '벽 점프'); bumpMult(0.25);
+  }
 }
 
 // ====================================================================
 // Character pose / camera
 // ====================================================================
-const DOWN = new THREE.Vector3(0, -1, 0);
-const _q = new THREE.Quaternion(), _e = new THREE.Euler(), _loc = new THREE.Vector3();
+const X_AXIS = new THREE.Vector3(1, 0, 0);
+const _q = new THREE.Quaternion(), _wt = new THREE.Vector3(), _pole = new THREE.Vector3(), _sh = new THREE.Vector3();
 function wrapAngle(a) { while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; }
 
 const _acc = new THREE.Vector3(), _up = new THREE.Vector3(), _fw = new THREE.Vector3(), _rt = new THREE.Vector3(),
@@ -782,7 +979,10 @@ function updateCharacter(dt) {
   state.tensionG = pull / 9.81;
 
   // --- target "up" axis of the body ---
-  if (player.grounded) {
+  const fx = player.fx, wall = player.wall;
+  if (wall.mode) {
+    _up.set(wall.nx * 0.45, 1, wall.nz * 0.45);              // lean out from the wall
+  } else if (player.grounded) {
     _up.set(v.x * 0.012, 1, v.z * 0.012);                     // slight lean into running
   } else if (pull > 1.5) {
     _up.copy(_acc).addScaledVector(UP, 1.5);                  // hang along the rope (head toward the anchor)
@@ -810,43 +1010,77 @@ function updateCharacter(dt) {
   _m4.makeBasis(_rt, _up, _bk);
   _qBody.setFromRotationMatrix(_m4);
   const turnRate = cam.mode === 'first' && player.grounded ? 30 : player.grounded ? 12 : 5.5;
-  character.quaternion.slerp(_qBody, 1 - Math.exp(-turnRate * dt));
-  character.position.copy(renderPos).y += PIVOT_Y;
+  const rolling = fx.roll > 0;
+  if (rolling) {
+    // forward roll: one full turn around the body's right axis, balled up around the hips
+    character.quaternion.copy(_qBody).multiply(_q.setFromAxisAngle(X_AXIS, -2 * Math.PI * (1 - fx.roll / ROLL_TIME)));
+  } else character.quaternion.slerp(_qBody, 1 - Math.exp(-turnRate * dt));
+  // hard landing: hips dip and come back up
+  const drop = fx.crouch > 0 ? 0.3 * Math.sin(Math.PI * (1 - fx.crouch / CROUCH_TIME)) : 0;
+  character.position.copy(renderPos).y += rolling ? 0.5 : PIVOT_Y;
+  model.position.y = rolling ? -(HIP_Y - 0.05) : -PIVOT_Y - drop;
   character.updateMatrixWorld(true);
 
-  // --- limbs ---
+  // --- limbs: pick a target point for each hand / ankle (body space), ease toward it, solve IK ---
   _qInv.copy(character.quaternion).invert();
   _lv.copy(v).applyQuaternion(_qInv);                         // velocity in body space (-z = forward)
-  const kk = 1 - Math.exp(-18 * dt), kLeg = 1 - Math.exp(-8 * dt);
-  if (player.grounded) {
-    player.walkPhase += dt * hs * 1.6;
-    const amp = Math.min(1, hs / 7) * 0.75, s = Math.sin(player.walkPhase);
-    legL.quaternion.slerp(_qLeg.setFromEuler(_e.set(s * amp, 0, 0)), Math.min(1, kk * 2));
-    legR.quaternion.slerp(_qLeg.setFromEuler(_e.set(-s * amp, 0, 0)), Math.min(1, kk * 2));
-  } else {
-    // legs trail behind the motion (drag), spread a little sideways; stretched straighter under strong pull
-    const trail = clamp(_lv.z * 0.03, -1.1, 1.1), side = clamp(-_lv.x * 0.02, -0.5, 0.5);
-    const bend = pull > 15 ? 0.1 : 0.3;
-    legL.quaternion.slerp(_qLeg.setFromEuler(_e.set(trail + bend, 0, side - 0.08)), kLeg);
-    legR.quaternion.slerp(_qLeg.setFromEuler(_e.set(trail - bend * 0.6, 0, side + 0.08)), kLeg);
+  const cycle = player.grounded || wall.mode === 'run';
+  const cycleSpeed = player.grounded ? hs : sp;
+  if (cycle) player.walkPhase += dt * cycleSpeed * 1.6;
+  const stride = Math.min(0.42, cycleSpeed * 0.055), lift = Math.min(0.24, cycleSpeed * 0.03);
+  spine.rotation.x = rolling ? -0.7 : player.grounded ? -Math.min(0.35, hs * 0.025) - drop : wall.mode ? -0.15 : 0;
+
+  const trail = clamp(_lv.z * 0.03, -1.1, 1.1), spread = clamp(-_lv.x * 0.02, -0.5, 0.5);
+  const tuck = !attachedAny() && v.y > 3;                      // knees up while rising freely
+  for (const [leg, side, ph] of [[legL, -1, 0], [legR, 1, Math.PI]]) {
+    let k = 1 - Math.exp(-8 * dt);
+    if (rolling) { _wt.set(side * 0.13, HIP_Y - 0.32, -0.32); k = 1 - Math.exp(-30 * dt); }
+    else if (cycle) {
+      const a = player.walkPhase + ph;
+      _wt.set(side * 0.11, ANKLE_Y + drop + lift * Math.max(0, Math.cos(a)), -Math.sin(a) * stride);
+      k = 1 - Math.exp(-30 * dt);
+    } else {
+      // air: legs trail behind the motion (drag); straighter under strong pull
+      const th = trail + (side < 0 ? 0.3 : -0.18) * (pull > 15 ? 0.35 : 1);
+      const reach = (leg.L1 + leg.L2) * (pull > 15 ? 0.97 : tuck ? 0.62 : 0.86);
+      _wt.set(side * 0.13 + spread, HIP_Y - 0.02 - Math.cos(th) * reach, -Math.sin(th) * reach);
+    }
+    leg.cur.lerp(_wt, k);
+    _pole.set(0, 0.15, -1).transformDirection(model.matrixWorld);          // knees bend forward
+    solveIK(leg, model.localToWorld(_wt.copy(leg.cur)), _pole);
+    // keep the foot level with the body
+    leg.mid.getWorldQuaternion(_q).invert();
+    leg.end.quaternion.copy(_q).multiply(character.quaternion);
   }
-  const s = Math.sin(player.walkPhase), amp = player.grounded ? Math.min(1, hs / 7) * 0.6 : 0;
-  for (const [arm, rope, sideSign] of [[armL, ropes.L, -1], [armR, ropes.R, 1]]) {
+
+  for (const [arm, rope, side, ph] of [[armL, ropes.L, -1, 0], [armR, ropes.R, 1, Math.PI]]) {
+    let k = 1 - Math.exp(-18 * dt);
     if (rope.state !== 'idle') {
-      model.worldToLocal(_loc.copy(rope.state === 'attached' ? rope.anchor : rope.tip));
-      _loc.sub(arm.position).normalize();
-      _q.setFromUnitVectors(DOWN, _loc);
-    } else if (player.grounded) {
-      _q.setFromEuler(_e.set(-s * amp * sideSign, 0, sideSign * 0.08));
+      // reach straight toward the rope
+      arm.root.getWorldPosition(_sh);
+      _wt.subVectors(rope.state === 'attached' ? swingCenter(rope) : rope.tip, _sh).normalize()
+         .multiplyScalar((arm.L1 + arm.L2) * 0.97).add(_sh);
+      model.worldToLocal(_wt); k = 1 - Math.exp(-30 * dt);
+    } else if (rolling) _wt.set(side * 0.2, HIP_Y - 0.05, -0.42);
+    else if (player.grounded) {
+      const swing = Math.sin(player.walkPhase + ph) * Math.min(0.35, hs * 0.045);   // opposite to the same-side leg
+      _wt.set(side * 0.3, hs > 9 ? 1.08 : 0.92, swing);                              // running: elbows bent
     } else {
       // free arm in the air: out for balance, pushed back a bit by the airflow
-      _q.setFromEuler(_e.set(clamp(-0.3 + _lv.z * 0.01, -0.9, 0.3), 0, sideSign * 0.8));
+      _wt.set(side * 0.78, 1.42, clamp(0.12 + _lv.z * 0.01, -0.3, 0.4));
     }
-    arm.quaternion.slerp(_q, kk);
+    arm.cur.lerp(_wt, k);
+    _pole.set(side * 0.4, -0.4, 1).transformDirection(model.matrixWorld);  // elbows bend back and out
+    solveIK(arm, model.localToWorld(_wt.copy(arm.cur)), _pole);
   }
+
+  // head turns toward where the camera looks (within neck limits)
+  const bodyYaw = Math.atan2(-player.fwd.x, -player.fwd.z);
+  head.rotation.set(clamp(cam.pitch, -0.5, 0.5) * 0.6, clamp(wrapAngle(cam.yaw - bodyYaw), -0.9, 0.9) * (player.grounded ? 1 : 0.5), 0);
   head.visible = cam.mode !== 'first';
   character.updateMatrixWorld(true);
 }
+const attachedAny = () => ropes.L.state === 'attached' || ropes.R.state === 'attached';
 
 function cameraBlocked(x, y, z) {
   if (y < 0.25) return true;
@@ -889,10 +1123,11 @@ function updateCamera(dt) {
   }
   cam.roll = (cam.roll || 0) + (rollTarget - (cam.roll || 0)) * Math.min(1, 4 * dt);
   camera.rotateZ(cam.roll);
-  // short shake on a yank
-  if (state.yankFlash > 0) {
-    state.yankFlash -= dt;
-    camera.rotateX((Math.random() - 0.5) * 0.02); camera.rotateY((Math.random() - 0.5) * 0.02);
+  // short shake on yanks, wall hits and hard landings
+  if (state.shake > 0) {
+    const a = state.shake * 0.05;
+    camera.rotateX((Math.random() - 0.5) * a); camera.rotateY((Math.random() - 0.5) * a);
+    state.shake = Math.max(0, state.shake - dt * 1.6);
   }
   // keep shadow camera around the player
   sun.target.position.copy(player.pos);
@@ -930,9 +1165,12 @@ function drawMinimap() {
   mmg.clearRect(0, 0, 360, 360);
   mmg.drawImage(mmBase, 0, 0);
   const sc = 360 / mmSpan, x = (player.pos.x - mmCx) * sc + 180, z = (player.pos.z - mmCz) * sc + 180;
+  mmg.fillStyle = '#ffc83d';                                  // coins (gems stay hidden)
+  for (const c of coins) if (!c.gem && !c.got) mmg.fillRect((c.pos.x - mmCx) * sc + 178.5, (c.pos.z - mmCz) * sc + 178.5, 3, 3);
   for (const r of Object.values(ropes)) if (r.state === 'attached') {
+    const a = swingCenter(r);
     mmg.strokeStyle = '#ffffff'; mmg.lineWidth = 2; mmg.beginPath();
-    mmg.moveTo(x, z); mmg.lineTo((r.anchor.x - mmCx) * sc + 180, (r.anchor.z - mmCz) * sc + 180); mmg.stroke();
+    mmg.moveTo(x, z); mmg.lineTo((a.x - mmCx) * sc + 180, (a.z - mmCz) * sc + 180); mmg.stroke();
   }
   mmg.save(); mmg.translate(x, z); mmg.rotate(-cam.yaw);
   mmg.fillStyle = '#3fc1c9'; mmg.strokeStyle = '#0b1620'; mmg.lineWidth = 2;
@@ -941,19 +1179,139 @@ function drawMinimap() {
 }
 let hudTimer = 0;
 const ROPE_LABEL = { idle: '—', flying: '발사 중', attached: '연결', retracting: '회수' };
+const comboEl = document.getElementById('combo'), popEl = document.getElementById('pop');
 function updateHUD(dt) {
   crosshair.classList.toggle('ok', state.aimInRange);
+  score.popT -= dt;
+  popEl.style.opacity = score.popT > 0 ? Math.min(1, score.popT * 3) : 0;
+  if (score.popT > 0 && popEl.textContent !== score.pop) popEl.textContent = score.pop;
   hudTimer += dt; if (hudTimer < 0.1) return; hudTimer = 0;
+  comboEl.innerHTML = score.active
+    ? `콤보 ×${score.mult.toFixed(2)} · ${Math.round(score.combo)} <small>= ${Math.round(score.combo * score.mult)}점 · 땅에 내려서면 확정</small>` : '';
+  const nCoin = coins.filter(c => c.got && !c.gem).length, nGem = coins.filter(c => c.got && c.gem).length;
   const kmh = player.vel.length() * 3.6;
   const dist = state.aimHit ? state.aimHit.point.distanceTo(_chest.copy(player.pos).setY(player.pos.y + ROPE_ATTACH_Y)) : null;
   hud.innerHTML =
+    `점수 <b>${score.total}</b> · 최고 콤보 <b>${score.best}</b> · 코인 <b>${nCoin}/${COIN_TOTAL}</b> · 보석 <b>${nGem}/${GEM_TOTAL}</b><br>` +
     `속도 <b>${kmh.toFixed(0)}</b> km/h · 높이 <b>${player.pos.y.toFixed(1)}</b> m<br>` +
     `시점 <b>${cam.mode === 'third' ? '3인칭' : '1인칭'}</b> · 조준 거리 <b>${dist === null ? '—' : dist.toFixed(0) + ' m'}</b>${dist !== null && !state.aimInRange ? ' (사거리 밖)' : ''}<br>` +
     `왼손 줄 <b>${ROPE_LABEL[ropes.L.state]}</b> · 오른손 줄 <b>${ROPE_LABEL[ropes.R.state]}</b>` +
     ` · 장력 <b>${(state.tensionG || 0).toFixed(1)}</b> G${(ropes.L.reeling || ropes.R.reeling) && (keys.ShiftLeft || keys.ShiftRight) ? ' · <b>감는 중</b>' : ''}` +
+    (player.wall.mode ? ` · <b>${player.wall.mode === 'run' ? '벽 달리기' : '벽 붙기'}</b>` : '') +
     (state.fallback ? `<br><span style="color:#ffcf7a">마우스 고정 없음 모드 · 마우스를 화면 끝으로 밀거나 방향키로 시야 회전</span>` : '');
   drawMinimap();
 }
+
+// ====================================================================
+// Style score (combo) + coins
+// ====================================================================
+// Staying in the air earns combo points (speed, swings, wall runs, near misses, good release timing);
+// each swing / trick raises the multiplier. Standing on the ground for a moment banks the combo,
+// a hard wall hit throws it away.
+const BEST_KEY = 'gangnam_swing_best', COIN_KEY = 'gangnam_swing_coins';
+const score = { total: 0, combo: 0, mult: 1, active: false, groundT: 0, nearCool: 0, best: 0, pop: '', popT: 0 };
+try { score.best = +localStorage.getItem(BEST_KEY) || 0; } catch (e) {}
+function popup(text) { score.pop = text; score.popT = 1.4; }
+function addStyle(points, label) {
+  if (!score.active) { score.active = true; score.combo = 0; score.mult = 1; }
+  score.combo += points;
+  if (label) popup(`${label} +${Math.round(points)}`);
+}
+function bumpMult(by) { if (score.active) score.mult = Math.min(5, score.mult + by); }
+function endCombo(crashed) {
+  if (!score.active) return;
+  score.active = false;
+  const pts = Math.round(score.combo * score.mult);
+  if (crashed) { popup(`충돌! 콤보 ${pts}점 날아감`); return; }
+  if (pts <= 0) return;
+  score.total += pts; popup(`콤보 확정 +${pts}`);
+  if (pts > score.best) { score.best = pts; try { localStorage.setItem(BEST_KEY, String(pts)); } catch (e) {} }
+}
+function updateScore(dt) {                                    // every physics step
+  const sp = player.vel.length();
+  if (!player.grounded && sp > 14) addStyle((sp - 14) * 0.6 * dt, '');
+  if (player.grounded && player.fx.roll <= 0) { score.groundT += dt; if (score.groundT > 0.6) endCombo(false); }
+  else score.groundT = 0;
+}
+
+// Coins are placed once from the map with a fixed seed, so everyone gets the same spots:
+// rooftops, mid-air between tall buildings (only reachable by swinging), and rarer gems on the
+// tallest roofs and down in narrow alleys. Collected ones are remembered in this browser.
+let gotCoins = new Set();
+try { gotCoins = new Set(JSON.parse(localStorage.getItem(COIN_KEY) || '[]')); } catch (e) {}
+const coins = [];
+{
+  const rnd = mulberry32(20261123);
+  const free = (x, y, z, clear) => {
+    for (const i of queryBuildings(x - clear, x + clear, z - clear, z + clear)) {
+      const b = buildings[i];
+      if (y < b.h + 1.5 && (pointInPoly(b, x, z) || closestOnPoly(b, x, z).d < clear)) return false;
+    }
+    return true;
+  };
+  const roofSpot = b => {
+    for (let k = 0; k < 30; k++) {
+      const x = b.minX + (b.maxX - b.minX) * (k ? rnd() : 0.5), z = b.minZ + (b.maxZ - b.minZ) * (k ? rnd() : 0.5);
+      if (pointInPoly(b, x, z) && free(x, b.h + 1.6, z, 0)) return new THREE.Vector3(x, b.h + 1.6, z);
+    }
+    return null;
+  };
+  const byHeight = buildings.filter(b => Math.abs(b.area) > 150).sort((a, b) => b.h - a.h);
+  for (const b of byHeight.slice(0, 6)) { const p = roofSpot(b); if (p) coins.push({ pos: p, gem: true }); }
+  const roofs = byHeight.slice(6).filter(b => b.h > 12);
+  for (let i = 0; i < 36 && roofs.length; i++) {
+    const p = roofSpot(roofs.splice(Math.floor(rnd() * roofs.length), 1)[0]);
+    if (p) coins.push({ pos: p, gem: false });
+  }
+  const rx = () => bMinX + 40 + rnd() * (bMaxX - bMinX - 80), rz = () => bMinZ + 40 + rnd() * (bMaxZ - bMinZ - 80);
+  for (let tries = 0, n = 0; n < 30 && tries < 4000; tries++) {
+    const x = rx(), z = rz(), y = 12 + rnd() * 38;
+    if (!free(x, y, z, 3)) continue;
+    let anchorable = false;
+    for (const i of queryBuildings(x - 60, x + 60, z - 60, z + 60)) if (buildings[i].h > y + 8) { anchorable = true; break; }
+    if (anchorable) { coins.push({ pos: new THREE.Vector3(x, y, z), gem: false }); n++; }
+  }
+  for (let tries = 0, n = 0; n < 6 && tries < 6000; tries++) {
+    const x = rx(), z = rz();
+    if (Math.hypot(x - SPAWN.x, z - SPAWN.z) < 80 || !free(x, 1.2, z, 1.0)) continue;
+    let walls = 0;
+    for (const i of queryBuildings(x - 3.5, x + 3.5, z - 3.5, z + 3.5)) if (closestOnPoly(buildings[i], x, z).d < 3.5) walls++;
+    if (walls >= 2) { coins.push({ pos: new THREE.Vector3(x, 1.2, z), gem: true }); n++; }
+  }
+  coins.forEach((c, i) => { c.got = gotCoins.has(i); });
+}
+const COIN_TOTAL = coins.filter(c => !c.gem).length, GEM_TOTAL = coins.length - COIN_TOTAL;
+const coinMesh = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.45, 0.45, 0.09, 20).rotateX(Math.PI / 2),
+  new THREE.MeshLambertMaterial({ color: 0xffc83d, emissive: 0x6a4a00 }), Math.max(1, COIN_TOTAL));
+const gemMesh = new THREE.InstancedMesh(new THREE.OctahedronGeometry(0.6),
+  new THREE.MeshLambertMaterial({ color: 0x6ff7ff, emissive: 0x1d6670 }), Math.max(1, GEM_TOTAL));
+for (const m of [coinMesh, gemMesh]) { m.frustumCulled = false; scene.add(m); }
+{ let ci = 0, gi = 0; for (const c of coins) c.slot = c.gem ? gi++ : ci++; }
+const _cm = new THREE.Matrix4(), _cq = new THREE.Quaternion(), _cs = new THREE.Vector3(), _cp3 = new THREE.Vector3();
+let clock = 0;
+function updateCoins(dt) {                                    // visuals, every frame
+  clock += dt;
+  coins.forEach((c, i) => {
+    _cp3.copy(c.pos).y += Math.sin(clock * 2 + i) * 0.15;
+    _cq.setFromAxisAngle(UP, clock * 2.5 + i);
+    (c.gem ? gemMesh : coinMesh).setMatrixAt(c.slot, _cm.compose(_cp3, _cq, _cs.setScalar(c.got ? 0 : 1)));
+  });
+  coinMesh.instanceMatrix.needsUpdate = gemMesh.instanceMatrix.needsUpdate = true;
+}
+function collectCoins() {                                     // every physics step
+  _cp3.copy(player.pos).y += 1;
+  coins.forEach((c, i) => {
+    if (c.got || c.pos.distanceToSquared(_cp3) > 1.5 * 1.5) return;
+    c.got = true; gotCoins.add(i);
+    try { localStorage.setItem(COIN_KEY, JSON.stringify([...gotCoins])); } catch (e) {}
+    score.total += c.gem ? 500 : 100;
+    popup(c.gem ? '보석 발견! +500' : '코인 +100');
+  });
+}
+document.getElementById('resetCoins').addEventListener('click', () => {
+  gotCoins.clear(); for (const c of coins) c.got = false;
+  try { localStorage.removeItem(COIN_KEY); } catch (e) {}
+});
 
 // ====================================================================
 // Input
@@ -1048,11 +1406,15 @@ function tick(dt) {
   if (!state.paused) {
     updateLookKeys(dt);
     physAcc += dt;
-    while (physAcc >= PHYS_DT) { prevPos.copy(player.pos); stepRopes(PHYS_DT); physicsStep(PHYS_DT); physAcc -= PHYS_DT; }
+    while (physAcc >= PHYS_DT) {
+      prevPos.copy(player.pos); stepRopes(PHYS_DT); physicsStep(PHYS_DT); collectCoins(); updateScore(PHYS_DT);
+      physAcc -= PHYS_DT;
+    }
   }
   renderPos.lerpVectors(prevPos, player.pos, physAcc / PHYS_DT);
   updateCharacter(dt);
   if (!state.paused) updateRopes(dt);
+  updateCoins(dt);
   updateCamera(dt);
   computeAim();
   updateHUD(dt);
@@ -1062,7 +1424,7 @@ document.getElementById('loading').remove();
 requestAnimationFrame(frame);
 
 // debug/test hooks
-window.__game = { player, cam, ropes, state, keys, fireRope, releaseRope, jump, yank, resetPlayer, buildings, S, estimated, tick, character };
+window.__game = { player, cam, ropes, state, keys, fireRope, releaseRope, jump, yank, resetPlayer, buildings, S, estimated, tick, character, score, coins };
 console.log(`buildings: ${buildings.length} (estimated heights: ${estimated}), roads: ${DATA.roads.length}, snapshot: ${DATA.snapshot}`);
 </script>
 </body>
