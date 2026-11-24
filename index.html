@@ -49,7 +49,8 @@
   #loading { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 16px; background: #1a2430; }
 </style>
 <script type="importmap">
-{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+               "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }
 </script>
 </head>
 <body>
@@ -102,6 +103,7 @@
 <script src="city_data.js"></script>
 <script type="module">
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 // ====================================================================
 // Settings
@@ -630,6 +632,82 @@ function solveIK(limb, target, pole) {
   aimBone(mid, _ikN.copy(_ikA).addScaledVector(_ikD, dist).sub(_ikE), back);
 }
 
+// ----- skinned character -----
+// Body: Quaternius "Universal Base Characters", motion: Quaternius "Universal Animation Library" (both CC0,
+// in assets/char). Loaded in the background; until it arrives (or if it fails) the simple body above is shown.
+// The free base model wears only underwear, so clothes are painted on in the shader by body region.
+// Mocap clips drive the body; the game-specific parts (rope arms, dive, lean, head look) are layered on top.
+const hero = { ready: false, phase: 0, sp: 0, airT: 0, jumped: false, landT: 9, landK: 0, t: 0, vy: 0,
+               ropeDir: { L: new THREE.Vector3(-0.3, 0.9, 0), R: new THREE.Vector3(0.3, 0.9, 0) } };
+// locomotion clips: name, native ground speed (m/s), cycle phase where the left foot is planted (synced by phase)
+const LOCO = [['Idle_Loop', 0, 0], ['Walk_Loop', 1.0, 0.28], ['Jog_Fwd_Loop', 5.6, 0.12], ['Sprint_Loop', 9.2, 0.17]];
+const CLOTHES_GLSL = `{
+  vec3 p = vBind; float ax = abs(p.x);              // bind pose: T-pose, feet at y = 0, facing +z
+  vec3 c = diffuseColor.rgb;
+  if (ax > 0.2 && p.y > 1.28) {                     // arms
+    if (ax < 0.655) c = cJacket; else if (ax < 0.7) c = cAccent;   // sleeve, rope launcher band at the wrist
+  } else if (p.y < 1.49 + 0.12 * smoothstep(0.055, 0.09, ax)) {   // below a crew neckline
+    if (p.y > 1.0) c = (ax < 0.008 && p.z > 0.0) ? cAccent : cJacket;   // jacket, zipper down the front
+    else if (p.y > 0.95) c = cDark;                 // jacket hem
+    else if (p.y > 0.14) c = cPants;
+    else if (p.y > 0.03) c = cShoe;
+    else c = cSole;
+  }
+  diffuseColor.rgb = c;
+}`;
+function clothed(map) {
+  const m = new THREE.MeshLambertMaterial({ map });
+  m.onBeforeCompile = sh => {
+    Object.assign(sh.uniforms, { cJacket: { value: jacketMat.color }, cDark: { value: jacketDark.color }, cPants: { value: pantsMat.color },
+                                 cShoe: { value: shoeMat.color }, cSole: { value: soleMat.color }, cAccent: { value: accentMat.color } });
+    sh.vertexShader = 'varying vec3 vBind;\n' + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nvBind = position;');
+    sh.fragmentShader = 'varying vec3 vBind;\nuniform vec3 cJacket, cDark, cPants, cShoe, cSole, cAccent;\n' +
+      sh.fragmentShader.replace('#include <map_fragment>', '#include <map_fragment>\n' + CLOTHES_GLSL);
+  };
+  return m;
+}
+async function loadHero() {
+  const L = new GLTFLoader();
+  const [body, hairG, animG] = await Promise.all(['hero.gltf', 'hair.gltf', 'anims.glb'].map(f => L.loadAsync('assets/char/' + f)));
+  const root = body.scene, bones = {};
+  root.rotation.y = Math.PI;                                    // the model faces +Z, the game's body faces -Z
+  root.traverse(o => { if (o.isBone) bones[o.name] = o; });
+  const meshes = [];
+  root.traverse(o => { if (o.isSkinnedMesh) meshes.push(o); });
+  // the hair is skinned to its own copy of the skeleton: bind it to the body's bones instead
+  hairG.scene.traverse(o => { if (o.isSkinnedMesh) meshes.push(o); });
+  for (const m of meshes) {
+    if (m.skeleton.bones[0] !== bones[m.skeleton.bones[0].name]) {
+      m.bind(new THREE.Skeleton(m.skeleton.bones.map(b => bones[b.name]), m.skeleton.boneInverses), m.bindMatrix);
+      meshes[0].parent.add(m);
+    }
+    const map = m.material.map;
+    m.material = m.name === 'SuperHero_Male' ? clothed(map)
+      : new THREE.MeshLambertMaterial({ map, color: m.name === 'Eyes' ? 0xffffff : 0x8a7060, alphaTest: 0.5, side: THREE.DoubleSide });
+    m.castShadow = true; m.frustumCulled = false;
+  }
+  // clips: rotations of every bone plus the pelvis height, scaled from the animation rig to this body
+  const k = 0.949 / 0.917, clips = {};
+  for (const c of animG.animations) {
+    for (const t of c.tracks) if (t.name === 'pelvis.position') for (let i = 0; i < t.values.length; i++) t.values[i] *= k;
+    clips[c.name] = c;
+  }
+  const mixer = new THREE.AnimationMixer(root), act = {};
+  for (const name in clips) { act[name] = mixer.clipAction(clips[name]); act[name].play(); act[name].setEffectiveWeight(0); }
+  const bind = {};
+  for (const n of ['thigh_l', 'calf_l', 'foot_l', 'thigh_r', 'calf_r', 'foot_r']) bind[n] = bones[n].quaternion.clone();
+  const wrist = side => { const o = new THREE.Object3D(); bones['hand_' + side].add(o); return o; };
+  const eye = new THREE.Object3D(); eye.position.set(0, 0.17, 0.02); bones.neck_01.add(eye);
+  Object.assign(hero, { root, bones, mixer, act, clips, bind, eye,
+    arms: { L: { up: bones.upperarm_l, lo: bones.lowerarm_l, hand: bones.hand_l, side: -1 },
+            R: { up: bones.upperarm_r, lo: bones.lowerarm_r, hand: bones.hand_r, side: 1 } } });
+  ropes.L.wrist = wrist('l'); ropes.R.wrist = wrist('r');      // ropes fire from the new wrists
+  pelvis.visible = false;                                        // retire the simple body
+  model.add(root);
+  hero.ready = true;
+}
+loadHero().catch(e => console.warn('character model failed to load, keeping the simple body', e));
+
 // ====================================================================
 // Game state
 // ====================================================================
@@ -1143,7 +1221,8 @@ function updateCharacter(dt) {
   // --- target "up" axis of the body, mixed from each motion ---
   _up.set(0, 0, 0);
   const addUp = (w, x, y, z) => { if (w > 1e-3) _up.addScaledVector(_tmp.set(x, y, z).normalize(), w); };
-  addUp(W.ground, clamp(anim.acc.x * 0.03 + v.x * 0.01, -0.35, 0.35), 1, clamp(anim.acc.z * 0.03 + v.z * 0.01, -0.35, 0.35));
+  const gl = hero.ready ? 0.4 : 1;                                     // the mocap run already leans forward
+  addUp(W.ground, clamp((anim.acc.x * 0.03 + v.x * 0.01) * gl, -0.35, 0.35), 1, clamp((anim.acc.z * 0.03 + v.z * 0.01) * gl, -0.35, 0.35));
   addUp(W.air, clamp(v.x * 0.02, -0.5, 0.5), 1, clamp(v.z * 0.02, -0.5, 0.5));       // free fall: lean into motion
   if (pull > 1.5) addUp(W.swing, _acc.x, _acc.y + 1.5, _acc.z);                   // hang along the rope
   else addUp(W.swing, clamp(v.x * 0.02, -0.5, 0.5), 1, clamp(v.z * 0.02, -0.5, 0.5));
@@ -1178,7 +1257,7 @@ function updateCharacter(dt) {
   const turnRate = W.ground * (cam.mode === 'first' ? 30 : 12) + (flyW + W.wall) * 5.5 + W.dive * 4;
   anim.qBase.slerp(_qBody, 1 - Math.exp(-turnRate * dt));
   // forward roll on a hard landing: one full turn around the right axis on top of the normal orientation
-  const rollAngle = fx.roll > 0 ? -2 * Math.PI * (1 - fx.roll / ROLL_TIME) : 0;
+  const rollAngle = fx.roll > 0 && !hero.ready ? -2 * Math.PI * (1 - fx.roll / ROLL_TIME) : 0;   // the mocap roll turns over by itself
   character.quaternion.copy(anim.qBase).multiply(_q.setFromAxisAngle(X_AXIS, rollAngle));
 
   // --- gait (walk -> run): stance foot glued to the ground sliding back under the body, swing foot lifted
@@ -1194,8 +1273,9 @@ function updateCharacter(dt) {
   const groundY = anim.dip + bob + 0.1 * run * moveF * gaitW;             // ground height in body space
 
   // body height: lowered by landing dip and running bounce; balled up around the hips while rolling
-  character.position.copy(renderPos).y += PIVOT_Y + (0.5 - PIVOT_Y) * anim.roll;
-  model.position.y = (-PIVOT_Y - groundY) * (1 - anim.roll) - (HIP_Y - 0.05) * anim.roll;
+  // (the mocap body brings its own bounce, landing and roll, so it just stands on the ground)
+  character.position.copy(renderPos).y += PIVOT_Y + (hero.ready ? 0 : (0.5 - PIVOT_Y) * anim.roll);
+  model.position.y = hero.ready ? -PIVOT_Y : (-PIVOT_Y - groundY) * (1 - anim.roll) - (HIP_Y - 0.05) * anim.roll;
   character.updateMatrixWorld(true);
 
   _qInv.copy(character.quaternion).invert();
@@ -1272,7 +1352,112 @@ function updateCharacter(dt) {
   head.rotation.set(clamp(cam.pitch, -0.5, 0.5) * 0.6 + lean * 0.7,
                     clamp(wrapAngle(cam.yaw - bodyYaw), -0.9, 0.9) * (0.5 + 0.5 * W.ground) - spine.rotation.y, 0);
   head.visible = cam.mode !== 'first';
+  if (hero.ready) poseHero(dt, gs, moveF, W.wall * 0.15 - W.swing * 0.08,
+                           clamp(cam.pitch, -0.5, 0.5) * 0.6, clamp(wrapAngle(cam.yaw - bodyYaw), -0.9, 0.9) * (0.5 + 0.5 * W.ground));
   character.updateMatrixWorld(true);
+}
+
+// ----- mocap body pose: clip weights from the motion weights above, then game-specific layers -----
+const _hS = new THREE.Vector3(), _hE = new THREE.Vector3(), _hH = new THREE.Vector3(), _hG = new THREE.Vector3(), _hD = new THREE.Vector3(),
+      _hN = new THREE.Vector3(), _hA = new THREE.Vector3(), _hB = new THREE.Vector3(), _hT = new THREE.Vector3(),
+      _hQ = new THREE.Quaternion(), _hQ2 = new THREE.Quaternion(), _hQu = new THREE.Quaternion(), _hQl = new THREE.Quaternion();
+// world-space rotation `q` applied to `bone`
+function rotateBone(bone, q) {
+  bone.getWorldQuaternion(_hQ2).premultiply(q);
+  bone.parent.getWorldQuaternion(_hQ).invert();
+  bone.quaternion.copy(_hQ).multiply(_hQ2);
+  bone.updateMatrixWorld(true);
+}
+// two-bone IK on the mocap arm, mixed over the animated pose by weight w
+function heroArmIK(a, target, pole, w) {
+  if (w < 1e-3) return;
+  _hQu.copy(a.up.quaternion); _hQl.copy(a.lo.quaternion);
+  a.up.getWorldPosition(_hS); a.lo.getWorldPosition(_hE); a.hand.getWorldPosition(_hH);
+  const l1 = _hS.distanceTo(_hE), l2 = _hE.distanceTo(_hH);
+  _hD.subVectors(target, _hS);
+  let dist = _hD.length(); if (dist < 1e-4) return;
+  _hD.divideScalar(dist);
+  dist = clamp(dist, Math.abs(l1 - l2) + 0.02, (l1 + l2) * 0.999);
+  const A = Math.acos(clamp((l1 * l1 + dist * dist - l2 * l2) / (2 * l1 * dist), -1, 1));
+  _hN.copy(pole).addScaledVector(_hD, -pole.dot(_hD));
+  if (_hN.lengthSq() < 1e-6) _hN.set(0, 1, 0).addScaledVector(_hD, -_hD.y);
+  _hN.normalize();
+  _hG.copy(_hD).multiplyScalar(Math.cos(A)).addScaledVector(_hN, Math.sin(A)).multiplyScalar(l1);   // new elbow, from the shoulder
+  rotateBone(a.up, _hQ.setFromUnitVectors(_hA.subVectors(_hE, _hS).normalize(), _hG.normalize()));
+  a.lo.getWorldPosition(_hE); a.hand.getWorldPosition(_hH);
+  _hG.copy(_hS).addScaledVector(_hD, dist);                                                         // wrist goal
+  rotateBone(a.lo, _hQ.setFromUnitVectors(_hA.subVectors(_hH, _hE).normalize(), _hB.subVectors(_hG, _hE).normalize()));
+  if (w < 1) {
+    _hQ.copy(a.up.quaternion); a.up.quaternion.copy(_hQu).slerp(_hQ, w);
+    _hQ.copy(a.lo.quaternion); a.lo.quaternion.copy(_hQl).slerp(_hQ, w);
+    a.up.updateMatrixWorld(true);
+  }
+}
+function poseHero(dt, gs, moveF, lean, headPitch, headYaw) {
+  const W = anim.w, fx = player.fx, act = hero.act, v = player.vel;
+  hero.t += dt;
+  // takeoff / touchdown timers for the jump and landing clips
+  if (player.grounded) {
+    if (hero.airT > 0.2 && fx.roll <= 0 && hero.vy < -4) { hero.landT = 0; hero.landK = clamp((-hero.vy - 4) / 10, 0.35, 1); }
+    hero.airT = 0; hero.jumped = v.y > 1.5;
+  } else {
+    if (hero.airT === 0) hero.jumped = v.y > 1.5;
+    hero.airT += dt;
+  }
+  hero.landT += dt; hero.vy = v.y;
+  // locomotion: speed picks the two neighbouring clips; one shared phase keeps their footfalls in step
+  hero.sp += (gs - hero.sp) * (1 - Math.exp(-8 * dt));
+  const s = hero.sp, lw = [0, 0, 0, 0];
+  let i = 0; while (i < 3 && s >= LOCO[i + 1][1]) i++;
+  if (i === 3) lw[3] = 1;
+  else { const f = (s - LOCO[i][1]) / (LOCO[i + 1][1] - LOCO[i][1]); lw[i] = 1 - f; lw[i + 1] = f; }
+  let rate = 0, rw = 0;
+  for (let j = 1; j < 4; j++) if (lw[j] > 0) { rate += lw[j] * Math.min(1.3, s / LOCO[j][1]) / hero.clips[LOCO[j][0]].duration; rw += lw[j]; }
+  if (rw > 0) hero.phase = (hero.phase + rate / rw * dt) % 1;
+  // mix: roll > landing > (locomotion vs. air)
+  const loco = W.ground + W.wall, air = W.air + W.swing + W.dive, sum = loco + air || 1;
+  const roll = anim.roll;
+  const landW = (1 - roll) * hero.landK * (1 - 0.7 * moveF) * clamp(1 - (hero.landT - 0.45) / 0.25, 0, 1);
+  const rest = 1 - roll - landW, startW = hero.jumped ? clamp((1 - hero.airT) / 0.3, 0, 1) : 0;
+  const set = (name, w, t) => { const a = act[name]; a.setEffectiveWeight(w); a.time = Math.min(t, a.getClip().duration * 0.999); };
+  for (let j = 0; j < 4; j++) {
+    const d = hero.clips[LOCO[j][0]].duration;
+    set(LOCO[j][0], rest * loco / sum * lw[j], j === 0 ? hero.t % d : ((hero.phase + LOCO[j][2]) % 1) * d);
+  }
+  set('Jump_Start', rest * air / sum * startW, 0.2 + hero.airT);
+  set('Jump_Loop', rest * air / sum * (1 - startW), hero.t % hero.clips.Jump_Loop.duration);
+  set('Jump_Land', landW, hero.landT * 1.5);
+  set('Roll', roll, (0.28 + 0.6 * clamp(1 - fx.roll / ROLL_TIME, 0, 1)) * hero.clips.Roll.duration);   // from hands-down to standing
+  hero.mixer.update(0);
+  const b = hero.bones;
+  // dive: legs straighten and close up
+  if (W.dive > 1e-3) for (const n in hero.bind) b[n].quaternion.slerp(hero.bind[n], W.dive * 0.85);
+  hero.root.updateMatrixWorld(true);
+  // posture on top of the clip: lean off a wall, hang back a little on the rope
+  _hA.set(1, 0, 0).applyQuaternion(character.quaternion);
+  if (Math.abs(lean) > 1e-3) rotateBone(b.spine_01, _hQ.setFromAxisAngle(_hA, -lean));
+  // arms: pinned back in a dive, reaching along the rope while it is out
+  for (const side of ['L', 'R']) {
+    const a = hero.arms[side], rope = ropes[side];
+    _hB.set(a.side * 0.3, 0, 1).applyQuaternion(character.quaternion);                     // elbows bend back
+    heroArmIK(a, model.localToWorld(_hT.set(a.side * 0.24, 0.98, 0.12)), _hB, W.dive);
+    if (rope.state !== 'idle') {
+      a.up.getWorldPosition(_hS);
+      _hD.subVectors(rope.state === 'attached' ? swingCenter(rope) : rope.tip, _hS).normalize();
+      hero.ropeDir[side].copy(_hD).applyQuaternion(_hQ.copy(character.quaternion).invert());   // remembered for letting go
+    }
+    const w = anim.rope[side];
+    if (w > 1e-3) {
+      a.up.getWorldPosition(_hS);
+      _hG.copy(hero.ropeDir[side]).applyQuaternion(character.quaternion).multiplyScalar(0.48).add(_hS);
+      _hB.set(a.side * 0.4, -0.4, 1).applyQuaternion(character.quaternion);              // elbows bend back and out
+      heroArmIK(a, _hG, _hB, w);
+    }
+  }
+  // head turns toward where the camera looks; hidden in first person
+  _hN.set(0, 1, 0).applyQuaternion(character.quaternion);
+  rotateBone(b.Head, _hQ.setFromAxisAngle(_hN, headYaw).multiply(_hQ2.setFromAxisAngle(_hA, headPitch)));
+  b.Head.scale.setScalar(cam.mode === 'first' ? 0.001 : 1);
 }
 
 // Ankle target (body space) for one leg at gait phase u (0..1): planted for the first `duty` of the
@@ -1317,7 +1502,7 @@ function updateCamera(dt) {
   camera.fov += (fov - camera.fov) * Math.min(1, 4 * dt);
   camera.updateProjectionMatrix();
   if (cam.mode === 'first') {
-    head.getWorldPosition(_tgt);
+    (hero.ready ? hero.eye : head).getWorldPosition(_tgt);
     _tgt.x += -Math.sin(cam.yaw) * 0.08; _tgt.z += -Math.cos(cam.yaw) * 0.08;
     camera.position.copy(_tgt);
     cam.actualDist = 0;
@@ -1645,7 +1830,7 @@ document.getElementById('loading').remove();
 requestAnimationFrame(frame);
 
 // debug/test hooks
-window.__game = { player, cam, ropes, state, keys, fireRope, releaseRope, jump, yank, resetPlayer, buildings, S, estimated, tick, character, score, coins, anim };
+window.__game = { player, cam, ropes, state, keys, fireRope, releaseRope, jump, yank, resetPlayer, buildings, S, estimated, tick, character, score, coins, anim, hero, camera, renderer, scene };
 console.log(`buildings: ${buildings.length} (estimated heights: ${estimated}), roads: ${DATA.roads.length}, snapshot: ${DATA.snapshot}`);
 </script>
 </body>
